@@ -86,6 +86,41 @@ most of `bank-requirements.md` out of the box.
    source:"TIM-online / Geobasis NRW", extractedAt). Host the PDF (Skybridge
    static/temp) or return a `data:` URL for now.
 
+## FINAL VERIFIED RECIPE (end-to-end tested 2026-05-30, incl. real address)
+This supersedes any ambiguity above. Proven by generating real PDFs via curl.
+
+- **Layout**: `"A4 portrait nc"` (WITH Übersichtskarte; do NOT use the `...no` variant).
+- **Title**: `attributes.title = "Flurkarte_" + <address>` (flows straight onto the map).
+- **Filename**: `outputFilename = <address>` (sanitised, no slashes). The user wants
+  the saved file named by the address.
+- **Scale**: pass `map.center = [E,N]` + `map.scale = <number>` (EASIER than bbox —
+  MapFish sizes the frame). Also set `attributes.scale = "<number>"` (string).
+- **dpi**: 127. **projection**: EPSG:25832. **rotation**: 0.
+- **Base layer**: WMS `wms_nw_alkis` (proven) — official ALKIS symbology.
+- **overviewMap**: FIXED statewide NRW extent
+  `bbox: [288300, 5551800, 524700, 5842200]`, dpi 127, EPSG:25832, one WMS layer
+  `https://www.wms.nrw.de/geobasis/wms_nw_nrw_uebersicht` / `nw_nrw_uebersicht_5000_utm32`.
+- **datasource**: required (attribution table) — see proven JSON.
+- **No parcel highlight needed** (the user's perfect sample has none).
+- See `docs/research/mapfish-print-spec.proven.json` (overview version) +
+  `docs/research/generate-flurkarte.py` (full address→PDF reference implementation).
+
+### Address → exact parcel (CRITICAL for quality)
+1. Geocode the **full address INCLUDING house number** (the user always provides
+   it; without it you only hit the street and the map is far too zoomed out).
+   Hackathon geocoder: Nominatim (`countrycodes=de`) is fine; BKG/NRW also work.
+2. Query OGC API `flurstueck` near the point (CRS84 bbox), output `crs` = EPSG:25832.
+   **Select the parcel that CONTAINS the geocoded point** (point-in-polygon) — do
+   NOT union a wide bbox of many parcels (that over-zooms).
+3. `center` = that parcel's centroid; pick `scale` so the **whole parcel +
+   Zuwegung to a public street + neighbours** fit (typically 1:500–1:1000).
+4. `flurstueckskennzeichen` from land+gemaschl+flur+flstnrzae.
+
+### Proven HTTP (no browser, no cookies, server-side)
+`POST /mapfish-print/print/timonline_templates/report.pdf` (JSON body) →
+`{ref,statusURL,downloadURL}` → poll `status/{ref}.json` until `"status":"finished"`
+→ GET `report/{ref}` = `application/pdf` (the bank-conform Flurkarte).
+
 ## Constraints / etiquette
 - Public service — **be gentle**: cache results, don't hammer, sane timeouts +
   one retry. Poll status no faster than ~1 s.
