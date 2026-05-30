@@ -9,6 +9,7 @@ const TIM_ONLINE_ORIGIN = "https://www.tim-online.nrw.de";
 const MAPFISH_PRINT_URL = `${TIM_ONLINE_ORIGIN}/mapfish-print/print/timonline_templates/report.pdf`;
 const OGC_FLURSTUECK_URL =
   "https://ogc-api.nrw.de/lika/v1/collections/flurstueck/items";
+const NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search";
 const EPSG_25832_CRS = "http://www.opengis.net/def/crs/EPSG/0/25832";
 const REQUEST_TIMEOUT_MS = 40_000;
 const POLL_INTERVAL_MS = 1_200;
@@ -84,6 +85,12 @@ interface ParcelFeature {
 
 interface ParcelFeatureCollection {
   features?: ParcelFeature[];
+}
+
+interface NominatimHit {
+  lat: string;
+  lon: string;
+  display_name?: string;
 }
 
 interface PrintTarget {
@@ -282,20 +289,166 @@ async function fetchParcelByCadastralInput(
   return parcel;
 }
 
+async function fetchParcelByProperties(
+  properties: ParcelProperties,
+): Promise<ParcelFeature> {
+  if (!properties.gemarkung || !properties.flur || !properties.flstnrzae) {
+    throw new Error("Parcel properties are missing cadastral identifiers.");
+  }
+
+  return fetchParcelByCadastralInput({
+    gemarkung: properties.gemarkung,
+    flur: properties.flur,
+    flurstueck: properties.flstnrzae,
+  });
+}
+
+async function geocodeAddress(address: string): Promise<[number, number]> {
+  const params = new URLSearchParams({
+    q: address,
+    format: "json",
+    limit: "3",
+    countrycodes: "de",
+    addressdetails: "1",
+  });
+  const hits = await fetchJsonWithRetry<NominatimHit[]>(
+    `${NOMINATIM_SEARCH_URL}?${params.toString()}`,
+    {
+      method: "GET",
+      headers: {
+        "User-Agent": "InstantFlurkarte/0.1 (https://github.com/klodulf78/Instant_Flurkarte)",
+      },
+    },
+  );
+  const hit = hits[0];
+  if (!hit) {
+    throw new Error(`Address not found: ${address}`);
+  }
+
+  const lon = Number(hit.lon);
+  const lat = Number(hit.lat);
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) {
+    throw new Error(`Geocoder returned invalid coordinates for ${address}.`);
+  }
+
+  return [lon, lat];
+}
+
+function ringFromUnknown(ring: unknown): [number, number][] {
+  if (!Array.isArray(ring)) {
+    return [];
+  }
+  return ring.flatMap((position) => {
+    if (
+      Array.isArray(position) &&
+      typeof position[0] === "number" &&
+      typeof position[1] === "number"
+    ) {
+      return [[position[0], position[1]] as [number, number]];
+    }
+    return [];
+  });
+}
+
+function pointInRing(point: [number, number], ring: [number, number][]): boolean {
+  const [x, y] = point;
+  let inside = false;
+
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+    const [xi, yi] = ring[i] ?? [0, 0];
+    const [xj, yj] = ring[j] ?? [0, 0];
+    const intersects =
+      yi > y !== yj > y &&
+      x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
+    if (intersects) {
+      inside = !inside;
+    }
+  }
+
+  return inside;
+}
+
+function pointInPolygon(point: [number, number], polygon: unknown): boolean {
+  if (!Array.isArray(polygon) || polygon.length === 0) {
+    return false;
+  }
+
+  const outerRing = ringFromUnknown(polygon[0]);
+  if (!pointInRing(point, outerRing)) {
+    return false;
+  }
+
+  for (const hole of polygon.slice(1)) {
+    if (pointInRing(point, ringFromUnknown(hole))) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function pointInFeature(point: [number, number], feature: ParcelFeature): boolean {
+  if (feature.geometry.type === "Polygon") {
+    return pointInPolygon(point, feature.geometry.coordinates);
+  }
+  if (!Array.isArray(feature.geometry.coordinates)) {
+    return false;
+  }
+  return feature.geometry.coordinates.some((polygon) =>
+    pointInPolygon(point, polygon),
+  );
+}
+
+async function fetchParcelContainingAddress(address: string): Promise<ParcelFeature> {
+  const point = await geocodeAddress(address);
+  const delta = 0.0012;
+  const params = new URLSearchParams({
+    bbox: [
+      point[0] - delta,
+      point[1] - delta,
+      point[0] + delta,
+      point[1] + delta,
+    ].join(","),
+    limit: "30",
+    f: "json",
+    profile: "rfc7946",
+  });
+  const collection = await fetchJsonWithRetry<ParcelFeatureCollection>(
+    `${OGC_FLURSTUECK_URL}?${params.toString()}`,
+    { method: "GET" },
+  );
+  const features = collection.features ?? [];
+  const containingParcel = features.find((feature) =>
+    pointInFeature(point, feature),
+  );
+  const parcel = containingParcel ?? features[0];
+  if (!parcel) {
+    throw new Error(`No NRW parcel found near address: ${address}`);
+  }
+
+  return fetchParcelByProperties(parcel.properties);
+}
+
 async function resolvePrintTarget(input: FlurkarteInput): Promise<PrintTarget> {
-  if (!hasCadastralInput(input)) {
+  const address = input.address?.trim();
+  const parcel = address
+    ? await fetchParcelContainingAddress(address)
+    : hasCadastralInput(input)
+      ? await fetchParcelByCadastralInput(input)
+      : undefined;
+
+  if (!parcel) {
     return {
-      address: input.address?.trim() || PLACEHOLDER_ADDRESS,
+      address: address || PLACEHOLDER_ADDRESS,
       center: HARD_CODED_KOELN_CENTER,
       scale: HARD_CODED_KOELN_SCALE,
       flurstueckskennzeichen: PLACEHOLDER_FLURSTUECKSKENNZEICHEN,
     };
   }
 
-  const parcel = await fetchParcelByCadastralInput(input);
   const bbox = geometryBbox(parcel);
   return {
-    address: input.address?.trim() || parcelAddress(parcel.properties),
+    address: address || parcelAddress(parcel.properties),
     center: bboxCenter(bbox),
     scale: chooseScaleForBbox(bbox),
     flurstueckskennzeichen: buildFlurstueckskennzeichen(parcel.properties),
@@ -553,7 +706,7 @@ function normalizeBundesland(value: string | undefined): string | undefined {
 
 function cacheKey(input: FlurkarteInput): string {
   return JSON.stringify({
-    milestone: "B2",
+    milestone: "B3",
     address: input.address?.trim() || PLACEHOLDER_ADDRESS,
     bundesland: normalizeBundesland(input.bundesland) || "nrw",
     gemarkung: input.gemarkung?.trim() || "",
