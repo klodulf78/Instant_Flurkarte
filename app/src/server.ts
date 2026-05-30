@@ -10,11 +10,28 @@ const flurkarteInputSchema = {
   address: z
     .string()
     .optional()
-    .describe("Address, e.g. Domkloster 4, 50667 Koeln."),
+    .describe(
+      "Full German address including house number, e.g. 'Unnaer Straße 1, 59423 Unna'. This alone is sufficient — no cadastral IDs needed.",
+    ),
   bundesland: z.string().optional().describe("Bundesland, e.g. NRW."),
-  gemarkung: z.string().optional().describe("Gemarkung."),
-  flur: z.string().optional().describe("Flur."),
-  flurstueck: z.string().optional().describe("Flurstueck."),
+  gemarkung: z
+    .string()
+    .optional()
+    .describe(
+      "Optional fallback. Only used if no address is provided. Do not ask the user for this.",
+    ),
+  flur: z
+    .string()
+    .optional()
+    .describe(
+      "Optional fallback. Only used if no address is provided. Do not ask the user for this.",
+    ),
+  flurstueck: z
+    .string()
+    .optional()
+    .describe(
+      "Optional fallback. Only used if no address is provided. Do not ask the user for this.",
+    ),
 } satisfies Record<keyof FlurkarteInput, z.ZodOptional<z.ZodString>>;
 
 const server = new McpServer(
@@ -108,7 +125,7 @@ const server = new McpServer(
     {
       name: "get_flurkarte",
       description:
-        "Return an official NRW Flurkarte PDF from TIM-online MapFish Print.",
+        "Generate the official NRW cadastral map (Flurkarte / Liegenschaftskarte) as a PDF for a given German address. IMPORTANT: only the `address` (street + house number + postal code + city in NRW) is required — the tool automatically geocodes the address and resolves the exact parcel. Do NOT ask the user for Gemarkung, Flur or Flurstueck; those are optional and only used as a fallback when no address is available. As soon as you have an address, call this tool directly.",
       inputSchema: flurkarteInputSchema,
       annotations: {
         title: "Get Flurkarte",
