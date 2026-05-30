@@ -5,23 +5,252 @@ import type {
   FlurkarteResult,
 } from "../shared/contract.js";
 
+const TIM_ONLINE_ORIGIN = "https://www.tim-online.nrw.de";
+const MAPFISH_PRINT_URL = `${TIM_ONLINE_ORIGIN}/mapfish-print/print/timonline_templates/report.pdf`;
+const REQUEST_TIMEOUT_MS = 40_000;
+const POLL_INTERVAL_MS = 1_200;
+const MAX_STATUS_POLLS = 30;
+const CACHE_TTL_MS = 10 * 60 * 1000;
+
+const PLACEHOLDER_ADDRESS = "Domkloster 4, 50667 Koeln";
+const PLACEHOLDER_FLURSTUECKSKENNZEICHEN = "NRW-B1-KOELN-HARDCODED";
+const TIM_ONLINE_SOURCE = "TIM-online / Geobasis NRW";
+const FALLBACK_SOURCE = "Geobasis NRW (ALKIS WMS fallback)";
+
+const HARD_CODED_KOELN_CENTER: [number, number] = [356547.045, 5645285.3475];
+const HARD_CODED_KOELN_SCALE = 1000;
+
+const ALKIS_WMS_LAYER = {
+  type: "wms",
+  baseURL: "https://www.wms.nrw.de/geobasis/wms_nw_alkis",
+  layers: [
+    "adv_alkis_flurstuecke",
+    "adv_alkis_gebaeude",
+    "adv_alkis_tatsaechliche_nutzung",
+  ],
+  imageFormat: "image/png",
+  customParams: { TRANSPARENT: "true" },
+  version: "1.3.0",
+};
+
+const NRW_OVERVIEW_LAYER = {
+  type: "wms",
+  baseURL: "https://www.wms.nrw.de/geobasis/wms_nw_nrw_uebersicht",
+  layers: ["nw_nrw_uebersicht_5000_utm32"],
+  imageFormat: "image/png",
+  version: "1.3.0",
+};
+
 const WMS_GET_MAP_URL =
   "https://www.wms.nrw.de/geobasis/wms_nw_alkis?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS=adv_alkis_flurstuecke,adv_alkis_gebaeude,adv_alkis_tatsaechliche_nutzung&CRS=EPSG:25832&BBOX=356360,5645292.5,356734.2,5645646.3&WIDTH=1057&HEIGHT=1000&FORMAT=image/png&STYLES=";
 
-const SOURCE = "Geobasis NRW (ALKIS WMS)";
-const PLACEHOLDER_ADDRESS = "Domkloster 4, 50667 Koeln";
-const PLACEHOLDER_FLURSTUECKSKENNZEICHEN = "NRW-M1-KOELN-BBOX";
+interface CacheEntry {
+  expiresAt: number;
+  result: FlurkarteResult;
+}
+
+interface MapfishCreateResponse {
+  ref?: string;
+  statusURL?: string;
+  downloadURL?: string;
+}
+
+interface MapfishStatusResponse {
+  done?: boolean;
+  status?: string;
+  error?: string;
+}
+
+const resultCache = new Map<string, CacheEntry>();
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+): Promise<Response> {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(url, {
+        ...init,
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`${response.status} ${response.statusText}`);
+      }
+
+      return response;
+    } catch (error) {
+      lastError = error;
+      if (attempt === 0) {
+        await delay(750);
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+async function fetchJsonWithRetry<T>(
+  url: string,
+  init: RequestInit,
+): Promise<T> {
+  const response = await fetchWithRetry(url, {
+    ...init,
+    headers: {
+      Accept: "application/json",
+      ...init.headers,
+    },
+  });
+  return (await response.json()) as T;
+}
+
+async function fetchBytesWithRetry(
+  url: string,
+  init: RequestInit,
+): Promise<Uint8Array> {
+  const response = await fetchWithRetry(url, init);
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+function absoluteTimOnlineUrl(pathOrUrl: string): string {
+  return new URL(pathOrUrl, TIM_ONLINE_ORIGIN).toString();
+}
+
+function sanitizeFilename(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[\\/:*?"<>|]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
+}
+
+function buildMapfishSpec(
+  address: string,
+  center: [number, number],
+  scale: number,
+): object {
+  return {
+    layout: "A4 portrait nc",
+    outputFormat: "pdf",
+    outputFilename: sanitizeFilename(address),
+    attributes: {
+      title: `Flurkarte_${address}`,
+      comment: "",
+      scale: String(scale),
+      datasource: [
+        {
+          table: {
+            columns: ["url", "layer", "fees", "accessConstraints"],
+            data: [
+              [
+                "https://www.wms.nrw.de/geobasis/wms_nw_alkis",
+                "ALKIS",
+                "Datenlizenz Deutschland Zero",
+                "Datenlizenz Deutschland Zero",
+              ],
+            ],
+          },
+        },
+      ],
+      map: {
+        projection: "EPSG:25832",
+        dpi: 127,
+        rotation: 0,
+        center,
+        scale,
+        layers: [ALKIS_WMS_LAYER],
+      },
+      overviewMap: {
+        projection: "EPSG:25832",
+        dpi: 127,
+        rotation: 0,
+        bbox: [288300, 5551800, 524700, 5842200],
+        layers: [NRW_OVERVIEW_LAYER],
+      },
+    },
+  };
+}
+
+async function fetchTimOnlinePdf(
+  address: string,
+  center: [number, number],
+  scale: number,
+): Promise<Uint8Array> {
+  const createResponse = await fetchJsonWithRetry<MapfishCreateResponse>(
+    MAPFISH_PRINT_URL,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(buildMapfishSpec(address, center, scale)),
+    },
+  );
+
+  if (!createResponse.ref) {
+    throw new Error("TIM-online MapFish response did not include a ref.");
+  }
+
+  const statusUrl = absoluteTimOnlineUrl(
+    createResponse.statusURL ??
+      `/mapfish-print/print/status/${createResponse.ref}.json`,
+  );
+  const downloadUrl = absoluteTimOnlineUrl(
+    createResponse.downloadURL ??
+      `/mapfish-print/print/report/${createResponse.ref}`,
+  );
+
+  for (let poll = 0; poll < MAX_STATUS_POLLS; poll += 1) {
+    if (poll > 0) {
+      await delay(POLL_INTERVAL_MS);
+    }
+
+    const status = await fetchJsonWithRetry<MapfishStatusResponse>(statusUrl, {
+      method: "GET",
+    });
+
+    if (!status.done) {
+      continue;
+    }
+    if (status.status !== "finished") {
+      throw new Error(
+        `TIM-online MapFish failed: ${status.status ?? "unknown"} ${status.error ?? ""}`.trim(),
+      );
+    }
+
+    const pdfBytes = await fetchBytesWithRetry(downloadUrl, {
+      method: "GET",
+      headers: { Accept: "application/pdf" },
+    });
+    if (pdfBytes.byteLength === 0) {
+      throw new Error("TIM-online returned an empty PDF.");
+    }
+    if (Buffer.from(pdfBytes.subarray(0, 4)).toString("ascii") !== "%PDF") {
+      throw new Error("TIM-online download was not a PDF.");
+    }
+
+    return pdfBytes;
+  }
+
+  throw new Error("TIM-online MapFish print timed out.");
+}
 
 async function fetchWmsPng(): Promise<Uint8Array> {
-  const response = await fetch(WMS_GET_MAP_URL, {
+  const response = await fetchWithRetry(WMS_GET_MAP_URL, {
+    method: "GET",
     headers: { Accept: "image/png" },
   });
-
-  if (!response.ok) {
-    throw new Error(
-      `ALKIS WMS GetMap failed: ${response.status} ${response.statusText}`,
-    );
-  }
 
   const bytes = new Uint8Array(await response.arrayBuffer());
   const contentType = response.headers.get("content-type") ?? "";
@@ -41,14 +270,14 @@ function pdfSafeText(value: string): string {
   return value.replace(/[^\x20-\x7E]/g, "?");
 }
 
-async function composePdf(
+async function composeFallbackPdf(
   pngBytes: Uint8Array,
   result: Omit<FlurkarteResult, "pdfUrl">,
 ): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.create();
-  pdfDoc.setTitle("Instant Flurkarte M1");
+  pdfDoc.setTitle("Instant Flurkarte fallback");
   pdfDoc.setAuthor("Instant Flurkarte");
-  pdfDoc.setSubject("Hardcoded NRW ALKIS WMS proof PDF");
+  pdfDoc.setSubject("Fallback NRW ALKIS WMS PDF");
   pdfDoc.setCreationDate(new Date(result.extractedAt));
   pdfDoc.setModificationDate(new Date(result.extractedAt));
 
@@ -149,8 +378,39 @@ async function composePdf(
   return pdfDoc.save();
 }
 
+function toPdfDataUrl(pdfBytes: Uint8Array): string {
+  return `data:application/pdf;base64,${Buffer.from(pdfBytes).toString("base64")}`;
+}
+
 function normalizeBundesland(value: string | undefined): string | undefined {
   return value?.trim().toLowerCase();
+}
+
+function cacheKey(input: FlurkarteInput): string {
+  return JSON.stringify({
+    milestone: "B1",
+    address: input.address?.trim() || PLACEHOLDER_ADDRESS,
+    bundesland: normalizeBundesland(input.bundesland) || "nrw",
+  });
+}
+
+function getCachedResult(key: string): FlurkarteResult | undefined {
+  const entry = resultCache.get(key);
+  if (!entry) {
+    return undefined;
+  }
+  if (entry.expiresAt <= Date.now()) {
+    resultCache.delete(key);
+    return undefined;
+  }
+  return entry.result;
+}
+
+function setCachedResult(key: string, result: FlurkarteResult): void {
+  resultCache.set(key, {
+    expiresAt: Date.now() + CACHE_TTL_MS,
+    result,
+  });
 }
 
 export const nrwAdapter: FlurkarteAdapter = {
@@ -167,23 +427,48 @@ export const nrwAdapter: FlurkarteAdapter = {
   },
 
   async getFlurkarte(input: FlurkarteInput): Promise<FlurkarteResult> {
+    const key = cacheKey(input);
+    const cached = getCachedResult(key);
+    if (cached) {
+      return cached;
+    }
+
+    const address = input.address?.trim() || PLACEHOLDER_ADDRESS;
     const extractedAt = new Date().toISOString();
-    const resultWithoutPdf = {
+    const baseResult = {
       flurstueckskennzeichen: PLACEHOLDER_FLURSTUECKSKENNZEICHEN,
-      address: input.address?.trim() || PLACEHOLDER_ADDRESS,
+      address,
       bundesland: "NRW",
-      source: SOURCE,
       extractedAt,
     };
 
-    const pngBytes = await fetchWmsPng();
-    const pdfBytes = await composePdf(pngBytes, resultWithoutPdf);
-
-    return {
-      ...resultWithoutPdf,
-      pdfUrl: `data:application/pdf;base64,${Buffer.from(pdfBytes).toString(
-        "base64",
-      )}`,
-    };
+    try {
+      const pdfBytes = await fetchTimOnlinePdf(
+        address,
+        HARD_CODED_KOELN_CENTER,
+        HARD_CODED_KOELN_SCALE,
+      );
+      const result = {
+        ...baseResult,
+        source: TIM_ONLINE_SOURCE,
+        pdfUrl: toPdfDataUrl(pdfBytes),
+      };
+      setCachedResult(key, result);
+      return result;
+    } catch (error) {
+      console.warn("TIM-online MapFish failed; using WMS fallback.", error);
+      const pngBytes = await fetchWmsPng();
+      const fallbackBaseResult = {
+        ...baseResult,
+        source: FALLBACK_SOURCE,
+      };
+      const pdfBytes = await composeFallbackPdf(pngBytes, fallbackBaseResult);
+      const result = {
+        ...fallbackBaseResult,
+        pdfUrl: toPdfDataUrl(pdfBytes),
+      };
+      setCachedResult(key, result);
+      return result;
+    }
   },
 };
