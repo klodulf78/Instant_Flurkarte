@@ -32,9 +32,9 @@ const ALKIS_WMS_LAYER = {
   type: "wms",
   baseURL: "https://www.wms.nrw.de/geobasis/wms_nw_alkis",
   layers: [
+    "adv_alkis_tatsaechliche_nutzung",
     "adv_alkis_flurstuecke",
     "adv_alkis_gebaeude",
-    "adv_alkis_tatsaechliche_nutzung",
   ],
   imageFormat: "image/png",
   customParams: { TRANSPARENT: "true" },
@@ -50,7 +50,7 @@ const NRW_OVERVIEW_LAYER = {
 };
 
 const WMS_GET_MAP_URL =
-  "https://www.wms.nrw.de/geobasis/wms_nw_alkis?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS=adv_alkis_flurstuecke,adv_alkis_gebaeude,adv_alkis_tatsaechliche_nutzung&CRS=EPSG:25832&BBOX=356360,5645292.5,356734.2,5645646.3&WIDTH=1057&HEIGHT=1000&FORMAT=image/png&STYLES=";
+  "https://www.wms.nrw.de/geobasis/wms_nw_alkis?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS=adv_alkis_tatsaechliche_nutzung,adv_alkis_flurstuecke,adv_alkis_gebaeude&CRS=EPSG:25832&BBOX=356360,5645292.5,356734.2,5645646.3&WIDTH=1057&HEIGHT=1000&FORMAT=image/png&STYLES=";
 
 interface CacheEntry {
   expiresAt: number;
