@@ -1,5 +1,21 @@
 import { McpServer } from "skybridge/server";
 import { z } from "zod";
+import { nrwAdapter } from "./adapters/nrw.js";
+import {
+  selectAdapter,
+  type FlurkarteInput,
+} from "./shared/contract.js";
+
+const flurkarteInputSchema = {
+  address: z
+    .string()
+    .optional()
+    .describe("Address, e.g. Domkloster 4, 50667 Koeln."),
+  bundesland: z.string().optional().describe("Bundesland, e.g. NRW."),
+  gemarkung: z.string().optional().describe("Gemarkung."),
+  flur: z.string().optional().describe("Flur."),
+  flurstueck: z.string().optional().describe("Flurstueck."),
+} satisfies Record<keyof FlurkarteInput, z.ZodOptional<z.ZodString>>;
 
 const server = new McpServer(
   {
@@ -84,6 +100,42 @@ const server = new McpServer(
       return {
         structuredContent: { prediction },
         content: [{ type: "text", text: prediction }],
+        isError: false,
+      };
+    },
+  )
+  .registerTool(
+    {
+      name: "get_flurkarte",
+      description:
+        "Return an M1 Instant Flurkarte PDF from the official NRW ALKIS WMS for a hardcoded Koeln bbox.",
+      inputSchema: flurkarteInputSchema,
+      annotations: {
+        title: "Get Flurkarte",
+        readOnlyHint: true,
+        destructiveHint: false,
+        openWorldHint: true,
+      },
+      _meta: {
+        "openai/toolInvocation/invoking": "Fetching the NRW ALKIS map...",
+        "openai/toolInvocation/invoked": "Flurkarte PDF ready.",
+      },
+    },
+    async (input) => {
+      const flurkarteInput: FlurkarteInput = input;
+      const result = await selectAdapter(
+        flurkarteInput,
+        [nrwAdapter],
+      ).getFlurkarte(flurkarteInput);
+
+      return {
+        structuredContent: result,
+        content: [
+          {
+            type: "text",
+            text: `Generated M1 Flurkarte PDF for ${result.address} (${result.bundesland}) from ${result.source}.`,
+          },
+        ],
         isError: false,
       };
     },
