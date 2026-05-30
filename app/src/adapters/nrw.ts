@@ -815,6 +815,15 @@ function buildTargetParcelLayer(target: PrintTarget): object | undefined {
     return undefined;
   }
 
+  // Place the label ~1 cm (at print scale) below the parcel's south edge so it
+  // never covers the official Flurstück number that TIM-online already draws.
+  const parcelBbox = geometryBbox(target.parcel);
+  const labelOffsetM = target.scale / 100; // 1 cm on paper, in map metres
+  const labelPoint: [number, number] = [
+    target.center[0],
+    parcelBbox[1] - labelOffsetM,
+  ];
+
   return {
     type: "geojson",
     name: "target-parcel-overlay",
@@ -836,7 +845,7 @@ function buildTargetParcelLayer(target: PrintTarget): object | undefined {
           },
           geometry: {
             type: "Point",
-            coordinates: target.center,
+            coordinates: labelPoint,
           },
         },
       ],
@@ -868,7 +877,7 @@ function buildTargetParcelLayer(target: PrintTarget): object | undefined {
             haloColor: "#ffffff",
             haloOpacity: 1,
             haloRadius: 1.5,
-            labelAlign: "cm",
+            labelAlign: "ct",
             labelXOffset: "0",
             labelYOffset: "0",
             conflictResolution: false,
