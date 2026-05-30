@@ -17,10 +17,11 @@ export default function GetFlurkarte() {
   const [saving, setSaving] = useState(false);
 
   const meta = responseMetadata as
-    | { pdfUrl?: string; pdfDownloadUrl?: string }
+    | { pdfUrl?: string; pdfDownloadUrl?: string; previewImageUrl?: string }
     | undefined;
   const pdfUrl = meta?.pdfUrl;
   const pdfDownloadUrl = meta?.pdfDownloadUrl;
+  const previewImageUrl = meta?.previewImageUrl;
   const address = output?.address ?? "";
   const title = `Flurkarte_${address}`;
   const canGet = Boolean(pdfDownloadUrl || pdfUrl);
@@ -97,17 +98,22 @@ export default function GetFlurkarte() {
           </div>
         ) : null}
 
-        {pdfDownloadUrl ? (
-          <iframe
-            title={title}
-            src={pdfDownloadUrl}
-            className="w-full rounded-md border border-border bg-white"
-            style={{ height: 560 }}
-          />
+        {previewImageUrl ? (
+          <figure className="flex flex-col gap-1">
+            <img
+              src={previewImageUrl}
+              alt={`Live-Vorschau der Flurkarte für ${address}`}
+              className="w-full rounded-md border border-border bg-white"
+            />
+            <figcaption className="text-xs opacity-60">
+              Live-Vorschau (amtliche ALKIS-Daten, Geobasis NRW) — die
+              vollständige amtliche PDF über „PDF öffnen".
+            </figcaption>
+          </figure>
         ) : (
           <div className="rounded-md border border-border p-6 text-sm opacity-70">
-            Vorschau hier nicht verfügbar — über „PDF öffnen" die amtliche
-            Flurkarte im Browser anzeigen.
+            Vorschau nicht verfügbar — über „PDF öffnen" die amtliche Flurkarte
+            im Browser anzeigen.
           </div>
         )}
       </div>

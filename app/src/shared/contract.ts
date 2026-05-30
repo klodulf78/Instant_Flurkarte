@@ -19,6 +19,8 @@ export interface FlurkarteResult {
    * useDownload is unavailable on Apps-SDK hosts.
    */
   pdfDownloadUrl?: string;
+  /** Official ALKIS WMS image of the map extent, for an inline chat preview. */
+  previewImageUrl?: string;
   flurstueckskennzeichen: string;
   address: string;
   bundesland: string;

@@ -1188,6 +1188,36 @@ function toPdfDataUrl(pdfBytes: Uint8Array): string {
   return `data:application/pdf;base64,${Buffer.from(pdfBytes).toString("base64")}`;
 }
 
+/**
+ * Live in-chat preview of the exact map extent via the official ALKIS WMS.
+ * Sandboxed views cannot embed the PDF (TIM-online blocks framing, data: PDFs
+ * are blocked), but a same-symbology WMS GetMap image renders reliably as an
+ * <img>. Raw commas (not %2C) — the WMS endpoint is picky.
+ */
+function buildWmsPreviewUrl(
+  center: [number, number],
+  scale: number,
+): string {
+  const [minE, minN, maxE, maxN] = mapFrameBbox(center, scale);
+  const w = maxE - minE;
+  const h = maxN - minN;
+  const height = 900;
+  const width = Math.max(1, Math.round((height * w) / h));
+  const query = [
+    "SERVICE=WMS",
+    "VERSION=1.3.0",
+    "REQUEST=GetMap",
+    "LAYERS=adv_alkis_tatsaechliche_nutzung,adv_alkis_flurstuecke,adv_alkis_gebaeude",
+    "STYLES=",
+    "CRS=EPSG:25832",
+    `BBOX=${minE},${minN},${maxE},${maxN}`,
+    `WIDTH=${width}`,
+    `HEIGHT=${height}`,
+    "FORMAT=image/png",
+  ].join("&");
+  return `https://www.wms.nrw.de/geobasis/wms_nw_alkis?${query}`;
+}
+
 function normalizeBundesland(value: string | undefined): string | undefined {
   return value?.trim().toLowerCase();
 }
@@ -1251,6 +1281,7 @@ export const nrwAdapter: FlurkarteAdapter = {
       extractedAt,
       confidence: target.confidence,
       warning: target.warning,
+      previewImageUrl: buildWmsPreviewUrl(target.center, target.scale),
     };
 
     try {
