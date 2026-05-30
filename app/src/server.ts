@@ -137,6 +137,10 @@ const server = new McpServer(
         "openai/toolInvocation/invoking": "Requesting the TIM-online Flurkarte...",
         "openai/toolInvocation/invoked": "Flurkarte PDF ready.",
       },
+      view: {
+        component: "get-flurkarte",
+        description: "Official NRW Flurkarte (PDF) — preview & download",
+      },
     },
     async (input) => {
       const flurkarteInput: FlurkarteInput = input;
@@ -145,14 +149,21 @@ const server = new McpServer(
         [nrwAdapter],
       ).getFlurkarte(flurkarteInput);
 
+      // Keep the model-facing payload lean. The base64 PDF (~200 KB+) MUST NOT
+      // go into structuredContent: it floods the LLM context and the host
+      // rejects the response ("An error occurred"). It lives in _meta, which
+      // reaches the view only and never the model.
+      const { pdfUrl, ...metadata } = result;
+
       return {
-        structuredContent: result,
+        structuredContent: metadata,
         content: [
           {
             type: "text",
             text: `Generated Flurkarte PDF for ${result.address} (${result.bundesland}) from ${result.source}.`,
           },
         ],
+        _meta: { pdfUrl },
         isError: false,
       };
     },
