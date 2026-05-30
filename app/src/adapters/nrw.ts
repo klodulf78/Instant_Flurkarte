@@ -18,6 +18,7 @@ const CACHE_TTL_MS = 10 * 60 * 1000;
 const BANK_CONTEXT_MARGIN_M = 60;
 const MAP_FRAME_WIDTH_AT_1000_M = 198;
 const MAP_FRAME_HEIGHT_AT_1000_M = 242;
+const SCALE_LADDER = [250, 500, 750, 1000, 1500, 2000, 2500] as const;
 
 const PLACEHOLDER_ADDRESS = "Domkloster 4, 50667 Koeln";
 const PLACEHOLDER_FLURSTUECKSKENNZEICHEN = "NRW-B1-KOELN-HARDCODED";
@@ -73,12 +74,15 @@ interface ParcelProperties {
   gemaschl?: string;
   flur?: string;
   flstnrzae?: string;
+  flaeche?: number;
   landschl?: string;
   lagebeztxt?: string;
+  tntxt?: string;
 }
 
 interface ParcelFeature {
   type: "Feature";
+  id?: string;
   properties: ParcelProperties;
   geometry: {
     type: "MultiPolygon" | "Polygon";
@@ -101,6 +105,8 @@ interface PrintTarget {
   center: [number, number];
   scale: number;
   flurstueckskennzeichen: string;
+  parcel?: ParcelFeature;
+  neighbors?: ParcelFeature[];
 }
 
 const resultCache = new Map<string, CacheEntry>();
@@ -223,8 +229,111 @@ function geometryBbox(feature: ParcelFeature): [number, number, number, number] 
   return [minX, minY, maxX, maxY];
 }
 
-function bboxCenter(bbox: [number, number, number, number]): [number, number] {
-  return [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2];
+function ringAreaAndCentroid(
+  ring: [number, number][],
+  origin: [number, number],
+): {
+  area: number;
+  centroidX: number;
+  centroidY: number;
+} {
+  if (ring.length < 3) {
+    return { area: 0, centroidX: 0, centroidY: 0 };
+  }
+
+  let doubleArea = 0;
+  let centroidX = 0;
+  let centroidY = 0;
+
+  for (let i = 0; i < ring.length; i += 1) {
+    const [rawX0, rawY0] = ring[i] ?? [0, 0];
+    const [rawX1, rawY1] = ring[(i + 1) % ring.length] ?? [0, 0];
+    const x0 = rawX0 - origin[0];
+    const y0 = rawY0 - origin[1];
+    const x1 = rawX1 - origin[0];
+    const y1 = rawY1 - origin[1];
+    const cross = x0 * y1 - x1 * y0;
+    doubleArea += cross;
+    centroidX += (x0 + x1) * cross;
+    centroidY += (y0 + y1) * cross;
+  }
+
+  const area = doubleArea / 2;
+  if (Math.abs(area) < 0.000001) {
+    return { area: 0, centroidX: 0, centroidY: 0 };
+  }
+
+  return {
+    area,
+    centroidX: centroidX / (6 * area) + origin[0],
+    centroidY: centroidY / (6 * area) + origin[1],
+  };
+}
+
+function polygonAreaAndCentroid(
+  polygon: unknown,
+  origin: [number, number],
+): {
+  area: number;
+  centroidX: number;
+  centroidY: number;
+} {
+  if (!Array.isArray(polygon)) {
+    return { area: 0, centroidX: 0, centroidY: 0 };
+  }
+
+  let totalArea = 0;
+  let weightedX = 0;
+  let weightedY = 0;
+
+  for (const ring of polygon) {
+    const ringResult = ringAreaAndCentroid(ringFromUnknown(ring), origin);
+    const signedArea = ringResult.area;
+    totalArea += signedArea;
+    weightedX += ringResult.centroidX * signedArea;
+    weightedY += ringResult.centroidY * signedArea;
+  }
+
+  if (Math.abs(totalArea) < 0.000001) {
+    return { area: 0, centroidX: 0, centroidY: 0 };
+  }
+
+  return {
+    area: totalArea,
+    centroidX: weightedX / totalArea,
+    centroidY: weightedY / totalArea,
+  };
+}
+
+function geometryCentroid(feature: ParcelFeature): [number, number] {
+  const bbox = geometryBbox(feature);
+  const origin: [number, number] = [
+    (bbox[0] + bbox[2]) / 2,
+    (bbox[1] + bbox[3]) / 2,
+  ];
+  const polygons =
+    feature.geometry.type === "Polygon"
+      ? [feature.geometry.coordinates]
+      : Array.isArray(feature.geometry.coordinates)
+        ? feature.geometry.coordinates
+        : [];
+  let totalArea = 0;
+  let weightedX = 0;
+  let weightedY = 0;
+
+  for (const polygon of polygons) {
+    const result = polygonAreaAndCentroid(polygon, origin);
+    const area = Math.abs(result.area);
+    totalArea += area;
+    weightedX += result.centroidX * area;
+    weightedY += result.centroidY * area;
+  }
+
+  if (totalArea === 0) {
+    return origin;
+  }
+
+  return [weightedX / totalArea, weightedY / totalArea];
 }
 
 function chooseScaleForBbox(bbox: [number, number, number, number]): number {
@@ -232,12 +341,29 @@ function chooseScaleForBbox(bbox: [number, number, number, number]): number {
   const height = bbox[3] - bbox[1];
   const neededWidth = width + BANK_CONTEXT_MARGIN_M * 2;
   const neededHeight = height + BANK_CONTEXT_MARGIN_M * 2;
-  const scale500Width = MAP_FRAME_WIDTH_AT_1000_M / 2;
-  const scale500Height = MAP_FRAME_HEIGHT_AT_1000_M / 2;
+  const requiredScale = Math.max(
+    neededWidth / (MAP_FRAME_WIDTH_AT_1000_M / 1000),
+    neededHeight / (MAP_FRAME_HEIGHT_AT_1000_M / 1000),
+  );
 
-  return neededWidth <= scale500Width && neededHeight <= scale500Height
-    ? 500
-    : 1000;
+  return (
+    SCALE_LADDER.find((scale) => scale >= requiredScale) ??
+    SCALE_LADDER[SCALE_LADDER.length - 1]
+  );
+}
+
+function mapFrameBbox(
+  center: [number, number],
+  scale: number,
+): [number, number, number, number] {
+  const width = MAP_FRAME_WIDTH_AT_1000_M * (scale / 1000);
+  const height = MAP_FRAME_HEIGHT_AT_1000_M * (scale / 1000);
+  return [
+    center[0] - width / 2,
+    center[1] - height / 2,
+    center[0] + width / 2,
+    center[1] + height / 2,
+  ];
 }
 
 function buildFlurstueckskennzeichen(properties: ParcelProperties): string {
@@ -259,6 +385,12 @@ function parcelAddress(properties: ParcelProperties): string {
 
 function flurstueckZae(value: string): string {
   return value.trim().split(/[/-]/, 1)[0] ?? value.trim();
+}
+
+function parcelLabel(properties: ParcelProperties): string {
+  const flur = properties.flur ?? "?";
+  const flurstueck = properties.flstnrzae ?? "?";
+  return `Flur ${flur} · Flurstück ${flurstueck}`;
 }
 
 function hasCadastralInput(input: FlurkarteInput): boolean {
@@ -413,6 +545,77 @@ function pointInFeature(point: [number, number], feature: ParcelFeature): boolea
   );
 }
 
+function parcelArea(properties: ParcelProperties): number {
+  return typeof properties.flaeche === "number" ? properties.flaeche : 0;
+}
+
+function isTransportOnlyParcel(properties: ParcelProperties): boolean {
+  const text = properties.tntxt ?? "";
+  const hasTransport = /Straßenverkehr|Bahnverkehr|Weg/.test(text);
+  const hasPrimaryUse = /Wohnbaufläche|Landwirtschaft|Gehölz|Platz|Sport-, Freizeit- und Erholungsfläche/.test(
+    text,
+  );
+  return hasTransport && !hasPrimaryUse;
+}
+
+function isPlausibleAddressParcel(feature: ParcelFeature): boolean {
+  return (
+    parcelArea(feature.properties) >= 20 &&
+    !isTransportOnlyParcel(feature.properties)
+  );
+}
+
+function approximateDistanceMeters(
+  a: [number, number],
+  b: [number, number],
+): number {
+  return Math.hypot((a[0] - b[0]) * 70_000, (a[1] - b[1]) * 111_000);
+}
+
+function addressFallbackScore(point: [number, number], feature: ParcelFeature): number {
+  const properties = feature.properties;
+  let score = approximateDistanceMeters(point, geometryCentroid(feature));
+  const text = properties.tntxt ?? "";
+  const location = properties.lagebeztxt ?? "";
+
+  if (/Wohnbaufläche/.test(text)) {
+    score -= 500;
+  }
+  if (/\d/.test(location)) {
+    score -= 250;
+  }
+  if (!isTransportOnlyParcel(properties)) {
+    score -= 100;
+  }
+  if (parcelArea(properties) >= 100 && parcelArea(properties) <= 3_000) {
+    score -= 100;
+  }
+  if (parcelArea(properties) < 20) {
+    score += 500;
+  }
+
+  return score;
+}
+
+function selectAddressParcel(
+  point: [number, number],
+  features: ParcelFeature[],
+): ParcelFeature | undefined {
+  const containingParcel = features.find((feature) =>
+    pointInFeature(point, feature),
+  );
+  if (containingParcel && isPlausibleAddressParcel(containingParcel)) {
+    return containingParcel;
+  }
+
+  return features
+    .filter(isPlausibleAddressParcel)
+    .sort(
+      (a, b) =>
+        addressFallbackScore(point, a) - addressFallbackScore(point, b),
+    )[0] ?? containingParcel ?? features[0];
+}
+
 async function fetchParcelContainingAddress(address: string): Promise<ParcelFeature> {
   const point = await geocodeAddress(address);
   const delta = 0.0012;
@@ -432,15 +635,61 @@ async function fetchParcelContainingAddress(address: string): Promise<ParcelFeat
     { method: "GET" },
   );
   const features = collection.features ?? [];
-  const containingParcel = features.find((feature) =>
-    pointInFeature(point, feature),
-  );
-  const parcel = containingParcel ?? features[0];
+  const parcel = selectAddressParcel(point, features);
   if (!parcel) {
     throw new Error(`No NRW parcel found near address: ${address}`);
   }
 
   return fetchParcelByProperties(parcel.properties);
+}
+
+function sameParcel(a: ParcelFeature, b: ParcelFeature): boolean {
+  return Boolean(
+    a.properties.gemaschl &&
+      a.properties.flur &&
+      a.properties.flstnrzae &&
+      a.properties.gemaschl === b.properties.gemaschl &&
+      a.properties.flur === b.properties.flur &&
+      a.properties.flstnrzae === b.properties.flstnrzae,
+  );
+}
+
+function pointInsideBbox(
+  point: [number, number],
+  bbox: [number, number, number, number],
+): boolean {
+  return (
+    point[0] >= bbox[0] &&
+    point[0] <= bbox[2] &&
+    point[1] >= bbox[1] &&
+    point[1] <= bbox[3]
+  );
+}
+
+async function fetchNeighborParcels(
+  targetParcel: ParcelFeature,
+  center: [number, number],
+  scale: number,
+): Promise<ParcelFeature[]> {
+  const printBbox = mapFrameBbox(center, scale);
+  const params = new URLSearchParams({
+    bbox: printBbox.join(","),
+    "bbox-crs": EPSG_25832_CRS,
+    crs: EPSG_25832_CRS,
+    limit: "50",
+    f: "json",
+  });
+  const collection = await fetchJsonWithRetry<ParcelFeatureCollection>(
+    `${OGC_FLURSTUECK_URL}?${params.toString()}`,
+    { method: "GET" },
+  );
+
+  return (collection.features ?? []).filter((feature) => {
+    if (sameParcel(feature, targetParcel)) {
+      return false;
+    }
+    return pointInsideBbox(geometryCentroid(feature), printBbox);
+  });
 }
 
 async function resolvePrintTarget(input: FlurkarteInput): Promise<PrintTarget> {
@@ -461,27 +710,157 @@ async function resolvePrintTarget(input: FlurkarteInput): Promise<PrintTarget> {
   }
 
   const bbox = geometryBbox(parcel);
+  const center = geometryCentroid(parcel);
+  const scale = chooseScaleForBbox(bbox);
   return {
     address: address || parcelAddress(parcel.properties),
-    center: bboxCenter(bbox),
-    scale: chooseScaleForBbox(bbox),
+    center,
+    scale,
     flurstueckskennzeichen: buildFlurstueckskennzeichen(parcel.properties),
+    parcel,
+    neighbors: await fetchNeighborParcels(parcel, center, scale),
+  };
+}
+
+function buildTargetParcelLayer(target: PrintTarget): object | undefined {
+  if (!target.parcel) {
+    return undefined;
+  }
+
+  return {
+    type: "geojson",
+    name: "target-parcel-overlay",
+    renderAsSvg: true,
+    geoJson: {
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          id: "target-parcel",
+          properties: {},
+          geometry: target.parcel.geometry,
+        },
+        {
+          type: "Feature",
+          id: "target-label",
+          properties: {
+            label: parcelLabel(target.parcel.properties),
+          },
+          geometry: {
+            type: "Point",
+            coordinates: target.center,
+          },
+        },
+      ],
+    },
+    style: {
+      version: "2",
+      "[IN ('target-parcel')]": {
+        symbolizers: [
+          {
+            type: "polygon",
+            strokeColor: "#e30613",
+            strokeOpacity: 1,
+            strokeWidth: 2.5,
+            strokeLinejoin: "round",
+            fillColor: "#e30613",
+            fillOpacity: 0.12,
+          },
+        ],
+      },
+      "[IN ('target-label')]": {
+        symbolizers: [
+          {
+            type: "text",
+            label: "[label]",
+            fontColor: "#000000",
+            fontFamily: "sans-serif",
+            fontSize: "12px",
+            fontWeight: "bold",
+            haloColor: "#ffffff",
+            haloOpacity: 1,
+            haloRadius: 1.5,
+            labelAlign: "cm",
+            labelXOffset: "0",
+            labelYOffset: "0",
+            conflictResolution: false,
+            goodnessOfFit: 0.1,
+            spaceAround: 0,
+          },
+        ],
+      },
+    },
+  };
+}
+
+function buildNeighborLabelLayer(target: PrintTarget): object | undefined {
+  const neighbors = target.neighbors ?? [];
+  if (neighbors.length === 0) {
+    return undefined;
+  }
+
+  return {
+    type: "geojson",
+    name: "neighbor-parcel-labels",
+    renderAsSvg: true,
+    geoJson: {
+      type: "FeatureCollection",
+      features: neighbors.map((neighbor, index) => ({
+        type: "Feature",
+        id: `neighbor-${index}`,
+        properties: {
+          label: neighbor.properties.flstnrzae ?? "",
+        },
+        geometry: {
+          type: "Point",
+          coordinates: geometryCentroid(neighbor),
+        },
+      })),
+    },
+    style: {
+      version: "2",
+      "*": {
+        symbolizers: [
+          {
+            type: "text",
+            label: "[label]",
+            fontColor: "#333333",
+            fontFamily: "sans-serif",
+            fontSize: "8px",
+            fontStyle: "italic",
+            haloColor: "#ffffff",
+            haloOpacity: 0.9,
+            haloRadius: 1,
+            labelAlign: "cm",
+            labelXOffset: "0",
+            labelYOffset: "0",
+            conflictResolution: false,
+            goodnessOfFit: 0.1,
+            spaceAround: 0,
+          },
+        ],
+      },
+    },
   };
 }
 
 function buildMapfishSpec(
-  address: string,
-  center: [number, number],
-  scale: number,
+  target: PrintTarget,
 ): object {
+  const targetLayer = buildTargetParcelLayer(target);
+  const neighborLayer = buildNeighborLabelLayer(target);
+  const layers = [targetLayer, neighborLayer, ALKIS_WMS_LAYER].filter(
+    (layer): layer is object => Boolean(layer),
+  );
+
   return {
     layout: "A4 portrait nc",
     outputFormat: "pdf",
-    outputFilename: sanitizeFilename(address),
+    outputFilename: sanitizeFilename(target.address),
     attributes: {
-      title: `Flurkarte_${address}`,
+      title: `Flurkarte_${target.address}`,
       comment: "",
-      scale: String(scale),
+      scale: String(target.scale),
       datasource: [
         {
           table: {
@@ -501,9 +880,9 @@ function buildMapfishSpec(
         projection: "EPSG:25832",
         dpi: 127,
         rotation: 0,
-        center,
-        scale,
-        layers: [ALKIS_WMS_LAYER],
+        center: target.center,
+        scale: target.scale,
+        layers,
       },
       overviewMap: {
         projection: "EPSG:25832",
@@ -517,16 +896,14 @@ function buildMapfishSpec(
 }
 
 async function fetchTimOnlinePdf(
-  address: string,
-  center: [number, number],
-  scale: number,
+  target: PrintTarget,
 ): Promise<Uint8Array> {
   const createResponse = await fetchJsonWithRetry<MapfishCreateResponse>(
     MAPFISH_PRINT_URL,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(buildMapfishSpec(address, center, scale)),
+      body: JSON.stringify(buildMapfishSpec(target)),
     },
   );
 
@@ -720,7 +1097,7 @@ function normalizeBundesland(value: string | undefined): string | undefined {
 
 function cacheKey(input: FlurkarteInput): string {
   return JSON.stringify({
-    milestone: "B4",
+    milestone: "B5-highlight-label-v3",
     address: input.address?.trim() || PLACEHOLDER_ADDRESS,
     bundesland: normalizeBundesland(input.bundesland) || "nrw",
     gemarkung: input.gemarkung?.trim() || "",
@@ -778,11 +1155,7 @@ export const nrwAdapter: FlurkarteAdapter = {
     };
 
     try {
-      const pdfBytes = await fetchTimOnlinePdf(
-        target.address,
-        target.center,
-        target.scale,
-      );
+      const pdfBytes = await fetchTimOnlinePdf(target);
       const result = {
         ...baseResult,
         source: TIM_ONLINE_SOURCE,
