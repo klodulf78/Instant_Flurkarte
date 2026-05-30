@@ -15,7 +15,7 @@ const REQUEST_TIMEOUT_MS = 40_000;
 const POLL_INTERVAL_MS = 1_200;
 const MAX_STATUS_POLLS = 30;
 const CACHE_TTL_MS = 10 * 60 * 1000;
-const BANK_CONTEXT_MARGIN_M = 60;
+const BANK_CONTEXT_MARGIN_M = 35;
 const MAP_FRAME_WIDTH_AT_1000_M = 198;
 const MAP_FRAME_HEIGHT_AT_1000_M = 242;
 const SCALE_LADDER = [250, 500, 750, 1000, 1500, 2000, 2500] as const;
@@ -424,9 +424,10 @@ function parcelLabel(properties: ParcelProperties): string {
 function normalizeAddrKey(value: string): string {
   return value
     .toLowerCase()
+    .replace(/\./g, " ") // "Lindenstr. 20" -> "lindenstr 20"
     .replace(/ß/g, "ss")
     .replace(/stra(ss|ß)e/g, "str")
-    .replace(/\bstr\.?\b/g, "str")
+    .replace(/\bstr\b/g, "str")
     .replace(/\s+/g, " ")
     .replace(/(\d+)\s+([a-z])\b/g, "$1$2") // "33 a" -> "33a"
     .trim();
@@ -435,6 +436,37 @@ function normalizeAddrKey(value: string): string {
 /** "Massener Kirchweg 33, 59427 Unna" -> normalized "massener kirchweg 33". */
 function requestedStreetHouse(address: string): string {
   return normalizeAddrKey(address.split(",")[0] ?? address);
+}
+
+/** Split a normalized key into street + trailing house number ("lindenstr 20"). */
+function splitStreetHouse(key: string): { street: string; house?: string } {
+  const m = key.match(/^(.*?)[ ,]*(\d+[a-z]?)$/);
+  if (m && m[1]) {
+    return { street: m[1].trim(), house: m[2] };
+  }
+  return { street: key.trim() };
+}
+
+/**
+ * True if a parcel's lagebeztxt covers the requested street + house number,
+ * including parcels that list several addresses, e.g. "Lindenstr. 16, 18, 20, 22"
+ * matches house 20. Same street, requested number among the listed numbers.
+ */
+function lagebeztxtMatchesRequest(lagebeztxt: string, requestedKey: string): boolean {
+  const req = splitStreetHouse(requestedKey);
+  if (!req.house) {
+    return false;
+  }
+  const lk = normalizeAddrKey(lagebeztxt);
+  if (lk === requestedKey) {
+    return true;
+  }
+  const street = (lk.match(/^([^\d]*)/)?.[1] ?? "").replace(/[ ,]+$/, "").trim();
+  if (!street || street !== req.street) {
+    return false;
+  }
+  const numbers: string[] = lk.slice(street.length).match(/\d+[a-z]?/g) ?? [];
+  return numbers.includes(req.house);
 }
 
 function hasCadastralInput(input: FlurkarteInput): boolean {
@@ -658,21 +690,30 @@ function selectAddressParcel(
   // Tier A — authoritative: a parcel whose official lagebeztxt equals the
   // requested street + house number. This is the cadastral source of truth.
   const key = requestedStreetHouse(address);
-  if (/\d/.test(key)) {
-    const exact = features.find(
-      (feature) =>
-        feature.properties.lagebeztxt &&
-        normalizeAddrKey(feature.properties.lagebeztxt) === key,
-    );
+  const hasHouseNumber = /\d/.test(key);
+  const lageMatch = (feature: ParcelFeature): boolean =>
+    Boolean(feature.properties.lagebeztxt) &&
+    lagebeztxtMatchesRequest(feature.properties.lagebeztxt as string, key);
+
+  // Tier A — the parcel that physically CONTAINS the geocoded point. Most
+  // reliable signal for "which parcel is the building on". If its official
+  // lagebeztxt also covers the requested house number (incl. multi-address
+  // parcels like "Lindenstr. 16, 18, 20, 22"), it's an exact match.
+  const containing = features.find((feature) => pointInFeature(point, feature));
+  if (containing && isPlausibleAddressParcel(containing)) {
+    return {
+      parcel: containing,
+      confidence: hasHouseNumber && lageMatch(containing) ? "exact" : "containing",
+    };
+  }
+
+  // Tier B — no containing parcel (geocode slightly off), but an authoritative
+  // lagebeztxt address match exists nearby.
+  if (hasHouseNumber) {
+    const exact = features.find(lageMatch);
     if (exact) {
       return { parcel: exact, confidence: "exact" };
     }
-  }
-
-  // Tier B — the geocoded point falls inside a plausible parcel.
-  const containing = features.find((feature) => pointInFeature(point, feature));
-  if (containing && isPlausibleAddressParcel(containing)) {
-    return { parcel: containing, confidence: "containing" };
   }
 
   // Tier C — nearest plausible parcel (best-effort, flagged as uncertain).
