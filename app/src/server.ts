@@ -165,7 +165,9 @@ const server = new McpServer(
         content: [
           {
             type: "text",
-            text: `Generated Flurkarte PDF for ${result.address} (${result.bundesland}) from ${result.source}.`,
+            text:
+              `Generated Flurkarte PDF for ${result.address} (${result.bundesland}) from ${result.source}.` +
+              (result.warning ? ` ⚠️ ${result.warning}` : ""),
           },
         ],
         _meta: { pdfUrl, pdfDownloadUrl },

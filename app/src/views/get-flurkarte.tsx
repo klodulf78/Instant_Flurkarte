@@ -24,6 +24,7 @@ export default function GetFlurkarte() {
   const address = output?.address ?? "";
   const title = `Flurkarte_${address}`;
   const canGet = Boolean(pdfDownloadUrl || pdfUrl);
+  const warning = output?.warning;
 
   // Prefer opening the official https PDF in the browser (reliable in
   // sandboxed hosts). Fall back to a host-mediated download of the base64.
@@ -89,6 +90,12 @@ export default function GetFlurkarte() {
             {saving ? "Speichere…" : "PDF öffnen"}
           </button>
         </div>
+
+        {warning ? (
+          <div className="rounded-md border border-amber-400 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/50 dark:bg-amber-950/40 dark:text-amber-200">
+            ⚠️ {warning}
+          </div>
+        ) : null}
 
         {pdfDownloadUrl ? (
           <iframe

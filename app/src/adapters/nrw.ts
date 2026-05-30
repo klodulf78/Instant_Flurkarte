@@ -73,7 +73,8 @@ interface ParcelProperties {
   gemarkung?: string;
   gemaschl?: string;
   flur?: string;
-  flstnrzae?: string;
+  flstnrzae?: string; // Flurstücksnummer Zähler
+  flstnrnen?: string; // Flurstücksnummer Nenner (optional, e.g. 1215/3)
   flaeche?: number;
   landschl?: string;
   lagebeztxt?: string;
@@ -98,7 +99,22 @@ interface NominatimHit {
   lat: string;
   lon: string;
   display_name?: string;
+  class?: string;
+  type?: string;
+  address?: { house_number?: string };
 }
+
+type MatchConfidence = "exact" | "containing" | "approximate";
+
+interface GeocodeResult {
+  point: [number, number];
+  houseNumber?: string;
+  klass?: string;
+  type?: string;
+}
+
+const APPROX_WARNING =
+  "Adresse konnte nicht eindeutig einem Flurstück zugeordnet werden – es wurde das nächstgelegene Flurstück gewählt. Bitte vor Verwendung prüfen.";
 
 interface PrintTarget {
   address: string;
@@ -107,6 +123,8 @@ interface PrintTarget {
   flurstueckskennzeichen: string;
   parcel?: ParcelFeature;
   neighbors?: ParcelFeature[];
+  confidence: MatchConfidence;
+  warning?: string;
 }
 
 const resultCache = new Map<string, CacheEntry>();
@@ -366,12 +384,21 @@ function mapFrameBbox(
   ];
 }
 
+function fullFlurstueckNumber(properties: ParcelProperties): string | undefined {
+  const zae = properties.flstnrzae?.trim();
+  if (!zae) {
+    return undefined;
+  }
+  const nen = properties.flstnrnen?.trim();
+  return nen && nen !== "0" ? `${zae}/${nen}` : zae;
+}
+
 function buildFlurstueckskennzeichen(properties: ParcelProperties): string {
   const parts = [
     properties.landschl,
     properties.gemaschl,
     properties.flur,
-    properties.flstnrzae,
+    fullFlurstueckNumber(properties),
   ].filter((part): part is string => Boolean(part));
   return parts.length > 0 ? parts.join("-") : PLACEHOLDER_FLURSTUECKSKENNZEICHEN;
 }
@@ -389,8 +416,25 @@ function flurstueckZae(value: string): string {
 
 function parcelLabel(properties: ParcelProperties): string {
   const flur = properties.flur ?? "?";
-  const flurstueck = properties.flstnrzae ?? "?";
+  const flurstueck = fullFlurstueckNumber(properties) ?? "?";
   return `Flur ${flur} · Flurstück ${flurstueck}`;
+}
+
+/** Normalise a street+house string for authoritative lagebeztxt matching. */
+function normalizeAddrKey(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/ß/g, "ss")
+    .replace(/stra(ss|ß)e/g, "str")
+    .replace(/\bstr\.?\b/g, "str")
+    .replace(/\s+/g, " ")
+    .replace(/(\d+)\s+([a-z])\b/g, "$1$2") // "33 a" -> "33a"
+    .trim();
+}
+
+/** "Massener Kirchweg 33, 59427 Unna" -> normalized "massener kirchweg 33". */
+function requestedStreetHouse(address: string): string {
+  return normalizeAddrKey(address.split(",")[0] ?? address);
 }
 
 function hasCadastralInput(input: FlurkarteInput): boolean {
@@ -449,7 +493,7 @@ async function fetchParcelByProperties(
   });
 }
 
-async function geocodeAddress(address: string): Promise<[number, number]> {
+async function geocodeAddress(address: string): Promise<GeocodeResult> {
   const params = new URLSearchParams({
     q: address,
     format: "json",
@@ -477,7 +521,12 @@ async function geocodeAddress(address: string): Promise<[number, number]> {
     throw new Error(`Geocoder returned invalid coordinates for ${address}.`);
   }
 
-  return [lon, lat];
+  return {
+    point: [lon, lat],
+    houseNumber: hit.address?.house_number,
+    klass: hit.class,
+    type: hit.type,
+  };
 }
 
 function ringFromUnknown(ring: unknown): [number, number][] {
@@ -598,35 +647,56 @@ function addressFallbackScore(point: [number, number], feature: ParcelFeature): 
 }
 
 function selectAddressParcel(
+  address: string,
   point: [number, number],
   features: ParcelFeature[],
-): ParcelFeature | undefined {
-  const containingParcel = features.find((feature) =>
-    pointInFeature(point, feature),
-  );
-  if (containingParcel && isPlausibleAddressParcel(containingParcel)) {
-    return containingParcel;
+): { parcel: ParcelFeature; confidence: MatchConfidence } | undefined {
+  if (features.length === 0) {
+    return undefined;
   }
 
-  return features
-    .filter(isPlausibleAddressParcel)
-    .sort(
-      (a, b) =>
-        addressFallbackScore(point, a) - addressFallbackScore(point, b),
-    )[0] ?? containingParcel ?? features[0];
+  // Tier A — authoritative: a parcel whose official lagebeztxt equals the
+  // requested street + house number. This is the cadastral source of truth.
+  const key = requestedStreetHouse(address);
+  if (/\d/.test(key)) {
+    const exact = features.find(
+      (feature) =>
+        feature.properties.lagebeztxt &&
+        normalizeAddrKey(feature.properties.lagebeztxt) === key,
+    );
+    if (exact) {
+      return { parcel: exact, confidence: "exact" };
+    }
+  }
+
+  // Tier B — the geocoded point falls inside a plausible parcel.
+  const containing = features.find((feature) => pointInFeature(point, feature));
+  if (containing && isPlausibleAddressParcel(containing)) {
+    return { parcel: containing, confidence: "containing" };
+  }
+
+  // Tier C — nearest plausible parcel (best-effort, flagged as uncertain).
+  const fallback =
+    features
+      .filter(isPlausibleAddressParcel)
+      .sort(
+        (a, b) =>
+          addressFallbackScore(point, a) - addressFallbackScore(point, b),
+      )[0] ??
+    containing ??
+    features[0];
+  return fallback ? { parcel: fallback, confidence: "approximate" } : undefined;
 }
 
-async function fetchParcelContainingAddress(address: string): Promise<ParcelFeature> {
-  const point = await geocodeAddress(address);
-  const delta = 0.0012;
+async function fetchParcelContainingAddress(
+  address: string,
+): Promise<{ parcel: ParcelFeature; confidence: MatchConfidence }> {
+  const geo = await geocodeAddress(address);
+  const [lon, lat] = geo.point;
+  const delta = 0.0015;
   const params = new URLSearchParams({
-    bbox: [
-      point[0] - delta,
-      point[1] - delta,
-      point[0] + delta,
-      point[1] + delta,
-    ].join(","),
-    limit: "30",
+    bbox: [lon - delta, lat - delta, lon + delta, lat + delta].join(","),
+    limit: "40",
     f: "json",
     profile: "rfc7946",
   });
@@ -635,12 +705,14 @@ async function fetchParcelContainingAddress(address: string): Promise<ParcelFeat
     { method: "GET" },
   );
   const features = collection.features ?? [];
-  const parcel = selectAddressParcel(point, features);
-  if (!parcel) {
+  const selected = selectAddressParcel(address, geo.point, features);
+  if (!selected) {
     throw new Error(`No NRW parcel found near address: ${address}`);
   }
 
-  return fetchParcelByProperties(parcel.properties);
+  // Re-fetch in EPSG:25832 for precise geometry/centroid used by the print.
+  const parcel = await fetchParcelByProperties(selected.parcel.properties);
+  return { parcel, confidence: selected.confidence };
 }
 
 function sameParcel(a: ParcelFeature, b: ParcelFeature): boolean {
@@ -692,13 +764,21 @@ async function fetchNeighborParcels(
   });
 }
 
-async function resolvePrintTarget(input: FlurkarteInput): Promise<PrintTarget> {
+export async function resolvePrintTarget(
+  input: FlurkarteInput,
+): Promise<PrintTarget> {
   const address = input.address?.trim();
-  const parcel = address
-    ? await fetchParcelContainingAddress(address)
-    : hasCadastralInput(input)
-      ? await fetchParcelByCadastralInput(input)
-      : undefined;
+  let parcel: ParcelFeature | undefined;
+  let confidence: MatchConfidence = "exact";
+
+  if (address) {
+    const resolved = await fetchParcelContainingAddress(address);
+    parcel = resolved.parcel;
+    confidence = resolved.confidence;
+  } else if (hasCadastralInput(input)) {
+    parcel = await fetchParcelByCadastralInput(input);
+    confidence = "exact";
+  }
 
   if (!parcel) {
     return {
@@ -706,6 +786,8 @@ async function resolvePrintTarget(input: FlurkarteInput): Promise<PrintTarget> {
       center: HARD_CODED_KOELN_CENTER,
       scale: HARD_CODED_KOELN_SCALE,
       flurstueckskennzeichen: PLACEHOLDER_FLURSTUECKSKENNZEICHEN,
+      confidence: "approximate",
+      warning: APPROX_WARNING,
     };
   }
 
@@ -719,6 +801,8 @@ async function resolvePrintTarget(input: FlurkarteInput): Promise<PrintTarget> {
     flurstueckskennzeichen: buildFlurstueckskennzeichen(parcel.properties),
     parcel,
     neighbors: await fetchNeighborParcels(parcel, center, scale),
+    confidence,
+    warning: confidence === "approximate" ? APPROX_WARNING : undefined,
   };
 }
 
@@ -1152,6 +1236,8 @@ export const nrwAdapter: FlurkarteAdapter = {
       address: target.address,
       bundesland: "NRW",
       extractedAt,
+      confidence: target.confidence,
+      warning: target.warning,
     };
 
     try {

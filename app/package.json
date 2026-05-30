@@ -10,7 +10,8 @@
     "build": "skybridge build",
     "start": "skybridge start",
     "deploy": "alpic deploy",
-    "validate": "tsx scripts/validate.ts"
+    "validate": "tsx scripts/validate.ts",
+    "diagnose": "tsx scripts/diagnose.ts"
   },
   "dependencies": {
     "@alpic-ai/ui": "^1.122.0",

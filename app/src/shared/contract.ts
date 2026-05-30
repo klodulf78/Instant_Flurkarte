@@ -24,6 +24,15 @@ export interface FlurkarteResult {
   bundesland: string;
   source: string; // e.g. "Geobasis NRW (ALKIS WMS + OGC API)"
   extractedAt: string; // ISO 8601
+  /**
+   * How confidently the address was matched to a parcel:
+   *  - "exact": authoritative lagebeztxt match (street + house number)
+   *  - "containing": geocoded point falls inside the parcel
+   *  - "approximate": nearest-parcel fallback — result is NOT guaranteed
+   */
+  confidence?: "exact" | "containing" | "approximate";
+  /** Human-readable caveat shown to the user when confidence is low. */
+  warning?: string;
 }
 
 /** One adapter per Bundesland. Same in/out everywhere → clean merge. */
