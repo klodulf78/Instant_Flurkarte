@@ -7,6 +7,9 @@ import type {
 
 const TIM_ONLINE_ORIGIN = "https://www.tim-online.nrw.de";
 const MAPFISH_PRINT_URL = `${TIM_ONLINE_ORIGIN}/mapfish-print/print/timonline_templates/report.pdf`;
+const OGC_FLURSTUECK_URL =
+  "https://ogc-api.nrw.de/lika/v1/collections/flurstueck/items";
+const EPSG_25832_CRS = "http://www.opengis.net/def/crs/EPSG/0/25832";
 const REQUEST_TIMEOUT_MS = 40_000;
 const POLL_INTERVAL_MS = 1_200;
 const MAX_STATUS_POLLS = 30;
@@ -59,6 +62,35 @@ interface MapfishStatusResponse {
   done?: boolean;
   status?: string;
   error?: string;
+}
+
+interface ParcelProperties {
+  gemarkung?: string;
+  gemaschl?: string;
+  flur?: string;
+  flstnrzae?: string;
+  landschl?: string;
+  lagebeztxt?: string;
+}
+
+interface ParcelFeature {
+  type: "Feature";
+  properties: ParcelProperties;
+  geometry: {
+    type: "MultiPolygon" | "Polygon";
+    coordinates: unknown;
+  };
+}
+
+interface ParcelFeatureCollection {
+  features?: ParcelFeature[];
+}
+
+interface PrintTarget {
+  address: string;
+  center: [number, number];
+  scale: number;
+  flurstueckskennzeichen: string;
 }
 
 const resultCache = new Map<string, CacheEntry>();
@@ -135,6 +167,139 @@ function sanitizeFilename(value: string): string {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 120);
+}
+
+function walkNumberPairs(coordinates: unknown, visit: (x: number, y: number) => void): void {
+  if (!Array.isArray(coordinates)) {
+    return;
+  }
+  const [first, second] = coordinates;
+  if (typeof first === "number" && typeof second === "number") {
+    visit(first, second);
+    return;
+  }
+  for (const child of coordinates) {
+    walkNumberPairs(child, visit);
+  }
+}
+
+function geometryBbox(feature: ParcelFeature): [number, number, number, number] {
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+
+  walkNumberPairs(feature.geometry.coordinates, (x, y) => {
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  });
+
+  if (
+    !Number.isFinite(minX) ||
+    !Number.isFinite(minY) ||
+    !Number.isFinite(maxX) ||
+    !Number.isFinite(maxY)
+  ) {
+    throw new Error("Parcel geometry did not contain valid EPSG:25832 coordinates.");
+  }
+
+  return [minX, minY, maxX, maxY];
+}
+
+function bboxCenter(bbox: [number, number, number, number]): [number, number] {
+  return [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2];
+}
+
+function chooseScaleForBbox(bbox: [number, number, number, number]): number {
+  const width = bbox[2] - bbox[0];
+  const height = bbox[3] - bbox[1];
+  const maxDimension = Math.max(width, height);
+  return maxDimension <= 80 ? 500 : 1000;
+}
+
+function buildFlurstueckskennzeichen(properties: ParcelProperties): string {
+  const parts = [
+    properties.landschl,
+    properties.gemaschl,
+    properties.flur,
+    properties.flstnrzae,
+  ].filter((part): part is string => Boolean(part));
+  return parts.length > 0 ? parts.join("-") : PLACEHOLDER_FLURSTUECKSKENNZEICHEN;
+}
+
+function parcelAddress(properties: ParcelProperties): string {
+  const location = [properties.lagebeztxt, properties.gemarkung]
+    .filter((part): part is string => Boolean(part))
+    .join(", ");
+  return location || PLACEHOLDER_ADDRESS;
+}
+
+function flurstueckZae(value: string): string {
+  return value.trim().split(/[/-]/, 1)[0] ?? value.trim();
+}
+
+function hasCadastralInput(input: FlurkarteInput): boolean {
+  return Boolean(input.gemarkung?.trim() && input.flur?.trim() && input.flurstueck?.trim());
+}
+
+async function fetchParcelByCadastralInput(
+  input: FlurkarteInput,
+): Promise<ParcelFeature> {
+  if (!input.gemarkung || !input.flur || !input.flurstueck) {
+    throw new Error("Missing cadastral input.");
+  }
+
+  const params = new URLSearchParams({
+    gemarkung: input.gemarkung.trim(),
+    flur: input.flur.trim(),
+    flstnrzae: flurstueckZae(input.flurstueck),
+    limit: "10",
+    crs: EPSG_25832_CRS,
+    f: "json",
+  });
+  const collection = await fetchJsonWithRetry<ParcelFeatureCollection>(
+    `${OGC_FLURSTUECK_URL}?${params.toString()}`,
+    { method: "GET" },
+  );
+  const features = collection.features ?? [];
+  const parcel = features.find((feature) => {
+    const properties = feature.properties;
+    return (
+      properties.gemarkung === input.gemarkung?.trim() &&
+      properties.flur === input.flur?.trim() &&
+      properties.flstnrzae === flurstueckZae(input.flurstueck ?? "")
+    );
+  }) ?? features[0];
+
+  if (!parcel) {
+    throw new Error(
+      `No NRW parcel found for ${input.gemarkung} Flur ${input.flur} Flurstueck ${input.flurstueck}.`,
+    );
+  }
+
+  return parcel;
+}
+
+async function resolvePrintTarget(input: FlurkarteInput): Promise<PrintTarget> {
+  if (!hasCadastralInput(input)) {
+    return {
+      address: input.address?.trim() || PLACEHOLDER_ADDRESS,
+      center: HARD_CODED_KOELN_CENTER,
+      scale: HARD_CODED_KOELN_SCALE,
+      flurstueckskennzeichen: PLACEHOLDER_FLURSTUECKSKENNZEICHEN,
+    };
+  }
+
+  const parcel = await fetchParcelByCadastralInput(input);
+  const bbox = geometryBbox(parcel);
+  return {
+    address: input.address?.trim() || parcelAddress(parcel.properties),
+    center: bboxCenter(bbox),
+    scale: chooseScaleForBbox(bbox),
+    flurstueckskennzeichen: buildFlurstueckskennzeichen(parcel.properties),
+  };
 }
 
 function buildMapfishSpec(
@@ -388,9 +553,12 @@ function normalizeBundesland(value: string | undefined): string | undefined {
 
 function cacheKey(input: FlurkarteInput): string {
   return JSON.stringify({
-    milestone: "B1",
+    milestone: "B2",
     address: input.address?.trim() || PLACEHOLDER_ADDRESS,
     bundesland: normalizeBundesland(input.bundesland) || "nrw",
+    gemarkung: input.gemarkung?.trim() || "",
+    flur: input.flur?.trim() || "",
+    flurstueck: input.flurstueck?.trim() || "",
   });
 }
 
@@ -433,20 +601,20 @@ export const nrwAdapter: FlurkarteAdapter = {
       return cached;
     }
 
-    const address = input.address?.trim() || PLACEHOLDER_ADDRESS;
+    const target = await resolvePrintTarget(input);
     const extractedAt = new Date().toISOString();
     const baseResult = {
-      flurstueckskennzeichen: PLACEHOLDER_FLURSTUECKSKENNZEICHEN,
-      address,
+      flurstueckskennzeichen: target.flurstueckskennzeichen,
+      address: target.address,
       bundesland: "NRW",
       extractedAt,
     };
 
     try {
       const pdfBytes = await fetchTimOnlinePdf(
-        address,
-        HARD_CODED_KOELN_CENTER,
-        HARD_CODED_KOELN_SCALE,
+        target.address,
+        target.center,
+        target.scale,
       );
       const result = {
         ...baseResult,
