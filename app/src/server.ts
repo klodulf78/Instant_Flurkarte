@@ -108,7 +108,7 @@ const server = new McpServer(
     {
       name: "get_flurkarte",
       description:
-        "Return an M1 Instant Flurkarte PDF from the official NRW ALKIS WMS for a hardcoded Koeln bbox.",
+        "Return an official NRW Flurkarte PDF from TIM-online MapFish Print.",
       inputSchema: flurkarteInputSchema,
       annotations: {
         title: "Get Flurkarte",
@@ -117,7 +117,7 @@ const server = new McpServer(
         openWorldHint: true,
       },
       _meta: {
-        "openai/toolInvocation/invoking": "Fetching the NRW ALKIS map...",
+        "openai/toolInvocation/invoking": "Requesting the TIM-online Flurkarte...",
         "openai/toolInvocation/invoked": "Flurkarte PDF ready.",
       },
     },
@@ -133,7 +133,7 @@ const server = new McpServer(
         content: [
           {
             type: "text",
-            text: `Generated M1 Flurkarte PDF for ${result.address} (${result.bundesland}) from ${result.source}.`,
+            text: `Generated Flurkarte PDF for ${result.address} (${result.bundesland}) from ${result.source}.`,
           },
         ],
         isError: false,

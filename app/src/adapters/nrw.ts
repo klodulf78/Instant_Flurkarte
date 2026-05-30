@@ -15,6 +15,9 @@ const REQUEST_TIMEOUT_MS = 40_000;
 const POLL_INTERVAL_MS = 1_200;
 const MAX_STATUS_POLLS = 30;
 const CACHE_TTL_MS = 10 * 60 * 1000;
+const BANK_CONTEXT_MARGIN_M = 60;
+const MAP_FRAME_WIDTH_AT_1000_M = 198;
+const MAP_FRAME_HEIGHT_AT_1000_M = 242;
 
 const PLACEHOLDER_ADDRESS = "Domkloster 4, 50667 Koeln";
 const PLACEHOLDER_FLURSTUECKSKENNZEICHEN = "NRW-B1-KOELN-HARDCODED";
@@ -167,16 +170,21 @@ function absoluteTimOnlineUrl(pathOrUrl: string): string {
 }
 
 function sanitizeFilename(value: string): string {
-  return value
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[\\/:*?"<>|]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 120);
+  return (
+    value
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[\\/:*?"<>|]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 120) || "Flurkarte"
+  );
 }
 
-function walkNumberPairs(coordinates: unknown, visit: (x: number, y: number) => void): void {
+function walkNumberPairs(
+  coordinates: unknown,
+  visit: (x: number, y: number) => void,
+): void {
   if (!Array.isArray(coordinates)) {
     return;
   }
@@ -222,8 +230,14 @@ function bboxCenter(bbox: [number, number, number, number]): [number, number] {
 function chooseScaleForBbox(bbox: [number, number, number, number]): number {
   const width = bbox[2] - bbox[0];
   const height = bbox[3] - bbox[1];
-  const maxDimension = Math.max(width, height);
-  return maxDimension <= 80 ? 500 : 1000;
+  const neededWidth = width + BANK_CONTEXT_MARGIN_M * 2;
+  const neededHeight = height + BANK_CONTEXT_MARGIN_M * 2;
+  const scale500Width = MAP_FRAME_WIDTH_AT_1000_M / 2;
+  const scale500Height = MAP_FRAME_HEIGHT_AT_1000_M / 2;
+
+  return neededWidth <= scale500Width && neededHeight <= scale500Height
+    ? 500
+    : 1000;
 }
 
 function buildFlurstueckskennzeichen(properties: ParcelProperties): string {
@@ -706,7 +720,7 @@ function normalizeBundesland(value: string | undefined): string | undefined {
 
 function cacheKey(input: FlurkarteInput): string {
   return JSON.stringify({
-    milestone: "B3",
+    milestone: "B4",
     address: input.address?.trim() || PLACEHOLDER_ADDRESS,
     bundesland: normalizeBundesland(input.bundesland) || "nrw",
     gemarkung: input.gemarkung?.trim() || "",
