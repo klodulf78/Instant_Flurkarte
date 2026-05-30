@@ -1,5 +1,6 @@
 import axios from 'axios';
 import proj4 from 'proj4';
+import { DOMParser } from '@xmldom/xmldom';
 
 // 1. Nominatim geocoding API response type definition
 interface NominatimResponse {
@@ -12,6 +13,24 @@ interface NominatimResponse {
 // 2. Coordinate system definition (WGS84 lat/lon <-> Berlin official EPSG:25833 UTM meters)
 const WGS84 = 'EPSG:4326';
 const BERLIN_UTM = '+proj=utm +zone=33 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs';
+
+// 3. Result type definitions
+export interface FlurkarteResult {
+    imageData: string;
+    flurstueckskennzeichen: string | null;
+    address: string;
+    bundesland: string;
+    confidence: 'exact' | 'containing' | 'approximate' | 'unknown';
+    warning?: string;
+    source: string;
+    extractedAt: string;
+}
+
+export interface ParcelQueryResult {
+    flurstueckskennzeichen: string | null;
+    confidence: 'exact' | 'containing' | 'approximate';
+    warning?: string;
+}
 
 /**
  * Search for multiple address candidates based on text address.
@@ -202,6 +221,149 @@ export async function getPropertyValueData(address: string, layer: string = 'brw
 }
 
 /**
+ * Query flurstueck (parcel) by point using WFS GetFeature request.
+ * @param utmX X coordinate in EPSG:25833
+ * @param utmY Y coordinate in EPSG:25833
+ */
+async function queryFlurstueckByPoint(utmX: number, utmY: number): Promise<ParcelQueryResult> {
+    console.log(`[WFS Query] Querying parcel at UTM coordinates: X=${utmX.toFixed(2)}, Y=${utmY.toFixed(2)}`);
+    
+    const wfsUrl = 'https://gdi.berlin.de/services/wfs/alkis_flurstuecke';
+    
+    // Use tight 90m bbox to avoid dense-area truncation
+    const bboxRadius = 45; // 90m total diameter
+    const minX = (utmX - bboxRadius).toFixed(2);
+    const minY = (utmY - bboxRadius).toFixed(2);
+    const maxX = (utmX + bboxRadius).toFixed(2);
+    const maxY = (utmY + bboxRadius).toFixed(2);
+    const bbox = `${minX},${minY},${maxX},${maxY},urn:ogc:def:crs:EPSG::25833`;
+    
+    const params = {
+        SERVICE: 'WFS',
+        VERSION: '2.0.0',
+        REQUEST: 'GetFeature',
+        typeNames: 'alkis_flurstuecke:flurstuecke',
+        BBOX: bbox,
+        COUNT: '200' // Limit to avoid truncation in dense areas
+    };
+    
+    try {
+        const response = await axios.get(wfsUrl, {
+            params: params,
+            timeout: 15000,
+            headers: { 
+                'User-Agent': 'SkybridgeBerlinMapAgent/1.0.0 (contact@yourdomain.com)' 
+            }
+        });
+        
+        console.log(`[WFS Query] Response received, parsing features...`);
+        
+        // Parse XML response
+        const xmlString = Buffer.from(response.data).toString('utf-8');
+        const parser = new DOMParser();
+        const xmlDoc = parser.parseFromString(xmlString, 'text/xml');
+        
+        const members = xmlDoc.getElementsByTagName('wfs:member');
+        if (members.length === 0) {
+            console.log(`[WFS Query] No parcels found in bbox`);
+            return {
+                flurstueckskennzeichen: null,
+                confidence: 'approximate',
+                warning: 'No parcels found in the area'
+            };
+        }
+        
+        // Find the parcel that contains the point (point-in-polygon)
+        let containingParcel = null;
+        let nearestParcel = null;
+        let minDistance = Infinity;
+        
+        for (let i = 0; i < members.length; i++) {
+            const member = members[i];
+            const fskoElement = member.getElementsByTagName('alkis_flurstuecke:fsko')[0];
+            const geomElement = member.getElementsByTagName('alkis_flurstuecke:geom')[0];
+            
+            if (!fskoElement || !geomElement) continue;
+            
+            const fsko = fskoElement.textContent;
+            
+            // Extract polygon coordinates from GML
+            const posListElement = geomElement.getElementsByTagName('gml:posList')[0];
+            if (!posListElement) continue;
+            
+            const posListText = posListElement.textContent;
+            if (!posListText) continue;
+            
+            const coords = posListText.trim().split(/\s+/).map(Number);
+            const vertices = [];
+            for (let j = 0; j < coords.length; j += 2) {
+                vertices.push({ x: coords[j], y: coords[j + 1] });
+            }
+            
+            // Check if point is inside polygon (ray-casting algorithm)
+            const isInside = isPointInPolygon(utmX, utmY, vertices);
+            if (isInside) {
+                containingParcel = fsko;
+                break;
+            }
+            
+            // Calculate distance to nearest vertex for fallback
+            for (const vertex of vertices) {
+                const dist = Math.sqrt(Math.pow(utmX - vertex.x, 2) + Math.pow(utmY - vertex.y, 2));
+                if (dist < minDistance) {
+                    minDistance = dist;
+                    nearestParcel = fsko;
+                }
+            }
+        }
+        
+        if (containingParcel) {
+            console.log(`[WFS Query] Found containing parcel: ${containingParcel}`);
+            return {
+                flurstueckskennzeichen: containingParcel,
+                confidence: 'containing'
+            };
+        } else if (nearestParcel) {
+            console.log(`[WFS Query] No containing parcel, using nearest: ${nearestParcel} (distance: ${minDistance.toFixed(2)}m)`);
+            return {
+                flurstueckskennzeichen: nearestParcel,
+                confidence: 'approximate',
+                warning: 'Address could not be matched exactly — nearest parcel chosen, please verify'
+            };
+        } else {
+            console.log(`[WFS Query] No parcels found`);
+            return {
+                flurstueckskennzeichen: null,
+                confidence: 'approximate',
+                warning: 'No parcels found in the area'
+            };
+        }
+    } catch (error: any) {
+        console.error('[WFS Query Error]', error.message);
+        return {
+            flurstueckskennzeichen: null,
+            confidence: 'approximate',
+            warning: `WFS query failed: ${error.message}`
+        };
+    }
+}
+
+/**
+ * Ray-casting algorithm to check if point is inside polygon
+ */
+function isPointInPolygon(x: number, y: number, vertices: { x: number; y: number }[]): boolean {
+    let inside = false;
+    for (let i = 0, j = vertices.length - 1; i < vertices.length; j = i++) {
+        const xi = vertices[i].x, yi = vertices[i].y;
+        const xj = vertices[j].x, yj = vertices[j].y;
+        
+        const intersect = ((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+        if (intersect) inside = !inside;
+    }
+    return inside;
+}
+
+/**
  * Return Berlin Flurkarte (cadastral) WMS map as Base64 data URL based on address.
  * @param address Berlin address to search
  * @param zoomLevel Zoom level (1-10, where 1 is closest zoom, 10 is furthest). Default: 5
@@ -230,40 +392,22 @@ export async function getFlurkarteAsBase64(address: string, zoomLevel: number = 
 
         console.log(`[Flurkarte] Starting Berlin ALKIS WMS server image request...`);
         
-        // ALKIS Flurstücke WMS endpoint for Berlin cadastral maps
-        // const wmsUrl = 'https://gdi.berlin.de/services/wms/alkis_flurstuecke';
-        // // const wmsUrl = 'https://gdi.berlin.de/wms/k5_schwarz';
-        
-        // const params = {
-        //     SERVICE: 'WMS',
-        //     VERSION: '1.3.0',
-        //     REQUEST: 'GetMap',
-        //     LAYERS: 'flurstuecke',
-        //     // LAYERS: 'k5_schwarz',
-        //     STYLES: '',
-        //     CRS: 'EPSG:25833',  // Berlin official coordinate system setting
-        //     BBOX: bbox,
-        //     WIDTH: '1200',       // Image width in pixels
-        //     HEIGHT: '900',      // Image height in pixels
-        //     FORMAT: 'image/png',
-        //     TRANSPARENT: 'FALSE'
-        // };
-
-        const wmsUrl = 'https://sgx.geodatenzentrum.de/wms_basemapde';
+        // Real ALKIS WMS endpoint for Berlin cadastral maps
+        const wmsUrl = 'https://gdi.berlin.de/services/wms/alkis_flurstuecke';
 
         const params = {
-            "SERVICE": "WMS",
-            "VERSION": "1.3.0",
-            "REQUEST": "GetMap",
-            "LAYERS": "de_basemapde_web_raster_grau",
-            "STYLES": "",
-            "CRS": "EPSG:25833",
-            "BBOX": bbox,
-            "WIDTH": "750",
-            "HEIGHT": "750",
-            "FORMAT": "image/png",
-            "TRANSPARENT": "FALSE"
-        }
+            SERVICE: 'WMS',
+            VERSION: '1.3.0',
+            REQUEST: 'GetMap',
+            LAYERS: 'flurstuecke',
+            STYLES: '',
+            CRS: 'EPSG:25833',  // Berlin official coordinate system setting
+            BBOX: bbox,
+            WIDTH: '1200',       // Image width in pixels
+            HEIGHT: '900',      // Image height in pixels
+            FORMAT: 'image/png',
+            TRANSPARENT: 'FALSE'
+        };
 
         console.log(`[Flurkarte WMS Request Parameters] URL: ${wmsUrl}`);
         console.log(`[Flurkarte WMS Request Parameters] BBOX: ${bbox}`);
@@ -328,6 +472,97 @@ export async function getFlurkarteAsBase64(address: string, zoomLevel: number = 
             throw new Error(`Failed to retrieve Flurkarte: ${error.message}`);
         }
     }
+}
+
+/**
+ * Get Flurkarte result with parcel identification and confidence tier.
+ * @param address Berlin address to search
+ * @param zoomLevel Zoom level (1-10, where 1 is closest zoom, 10 is furthest). Default: 5
+ */
+export async function getFlurkarteResult(address: string, zoomLevel: number = 1): Promise<FlurkarteResult> {
+    console.log(`[Flurkarte Result] Starting comprehensive query for: ${address}`);
+    
+    // Convert zoom level to radius
+    const zoomRadiusMap: { [key: number]: number } = {
+        1: 25,
+        2: 50,
+        3: 75,
+        4: 100,
+        5: 150,
+        6: 200,
+        7: 300,
+        8: 400,
+        9: 500,
+        10: 750
+    };
+    const radius = zoomRadiusMap[zoomLevel] || 150;
+    
+    // Geocode address to get UTM coordinates
+    const geocodeUrl = 'https://nominatim.openstreetmap.org/search';
+    const geocodeResponse = await axios.get<NominatimResponse[]>(geocodeUrl, {
+        params: {
+            q: address,
+            format: 'json',
+            limit: 1
+        },
+        headers: { 
+            'User-Agent': 'SkybridgeBerlinMapAgent/1.0.0 (contact@yourdomain.com)' 
+        }
+    });
+
+    if (!geocodeResponse.data || geocodeResponse.data.length === 0) {
+        throw new Error(`Address not found: ${address}`);
+    }
+
+    const location = geocodeResponse.data[0];
+    const lat = parseFloat(location.lat);
+    const lon = parseFloat(location.lon);
+    
+    // Convert to UTM coordinates
+    const [utmX, utmY] = proj4(WGS84, BERLIN_UTM, [lon, lat]) as [number, number];
+    console.log(`[Flurkarte Result] Geocoded to UTM: X=${utmX.toFixed(2)}, Y=${utmY.toFixed(2)}`);
+    
+    // Query WFS for parcel identification
+    const parcelResult = await queryFlurstueckByPoint(utmX, utmY);
+    
+    // Fetch ALKIS WMS map image
+    const bbox = await getBboxFromAddress(address, radius);
+    const wmsUrl = 'https://gdi.berlin.de/services/wms/alkis_flurstuecke';
+    const wmsParams = {
+        SERVICE: 'WMS',
+        VERSION: '1.3.0',
+        REQUEST: 'GetMap',
+        LAYERS: 'flurstuecke',
+        STYLES: '',
+        CRS: 'EPSG:25833',
+        BBOX: bbox,
+        WIDTH: '1200',
+        HEIGHT: '900',
+        FORMAT: 'image/png',
+        TRANSPARENT: 'FALSE'
+    };
+
+    const wmsResponse = await axios({
+        method: 'GET',
+        url: wmsUrl,
+        params: wmsParams,
+        responseType: 'arraybuffer',
+        timeout: 30000
+    });
+
+    const base64Image = Buffer.from(wmsResponse.data, 'binary').toString('base64');
+    const imageData = `data:image/png;base64,${base64Image}`;
+    
+    return {
+        imageData,
+        flurstueckskennzeichen: parcelResult.flurstueckskennzeichen,
+        address,
+        bundesland: 'Berlin',
+        confidence: parcelResult.confidence,
+        warning: parcelResult.warning,
+        source: 'GDI Berlin ALKIS WMS/WFS',
+        extractedAt: new Date().toISOString()
+    };
 }
 
 /**

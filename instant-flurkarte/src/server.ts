@@ -1,6 +1,6 @@
 import { McpServer, image, text } from "skybridge/server";
 import { z } from "zod";
-import { getBerlinMapAsBase64, getFlurkarteAsBase64, searchAddresses, getPropertyValueData } from "./berlinMapService.js";
+import { getBerlinMapAsBase64, getFlurkarteResult, searchAddresses, getPropertyValueData } from "./berlinMapService.js";
 
 // Session-based address history
 const addressHistory: string[] = [];
@@ -110,7 +110,16 @@ server.registerTool(
         text(`📊 Layer: ${layerNames[layer] || layer}`),
         text(`💾 You can right-click on the image above and select "Save image as..." to download it.`),
         image(Buffer.from(dataUrl.split(',')[1], 'base64'), 'image/png')
-      ]
+      ],
+      _meta: {
+        imageData: dataUrl
+      },
+      structuredContent: {
+        address: address,
+        bundesland: 'Berlin',
+        layer: layer,
+        zoomLevel: zoomLevel
+      }
     };
   }
 );
@@ -137,7 +146,7 @@ server.registerTool(
       }
     }
     
-    const dataUrl = await getFlurkarteAsBase64(address, zoomLevel);
+    const result = await getFlurkarteResult(address, zoomLevel);
     
     return {
       content: [
@@ -145,11 +154,18 @@ server.registerTool(
         text(`📍 Address: ${address}`),
         text(`🔍 Zoom Level: ${zoomLevel} (1=closest, 10=furthest)`),
         text(`💾 You can right-click on the image above and select "Save image as..." to download it.`),
-        image(Buffer.from(dataUrl.split(',')[1], 'base64'), 'image/png')
+        image(Buffer.from(result.imageData.split(',')[1], 'base64'), 'image/png')
       ],
+      _meta: {
+        imageData: result.imageData
+      },
       structuredContent: {
-        imageData: dataUrl,
-        address: address,
+        imageData: result.imageData,
+        address: result.address,
+        flurstueckskennzeichen: result.flurstueckskennzeichen,
+        bundesland: result.bundesland,
+        confidence: result.confidence,
+        warning: result.warning || null,
         zoomLevel: zoomLevel
       }
     };

@@ -1,52 +1,51 @@
-import { useEffect, useState } from "react";
-import { useToolInfo, useViewState, useDownload, useFiles } from "skybridge/web";
-import { FileImage, FileText, Layers, Map, Info } from "lucide-react";
+import { useState } from "react";
+import { useToolInfo, useDownload, useFiles } from "skybridge/web";
+import { FileImage, FileText, Layers, Map, Info, AlertTriangle } from "lucide-react";
 import jsPDF from "jspdf";
 import "../index.css";
 
 export default function FlurkarteMap() {
-  const { output } = useToolInfo();
+  const { output, responseMetadata } = useToolInfo();
   const { download } = useDownload();
   const { upload, getDownloadUrl } = useFiles();
   const [isDownloadingPNG, setIsDownloadingPNG] = useState(false);
   const [isDownloadingPDF, setIsDownloadingPDF] = useState(false);
 
-  const [mapData, setMapData] = useViewState<{ 
-    imageData: string | null;
-    address: string | null;
-    zoomLevel: number | null;
-  }>({ 
-    imageData: null, 
-    address: null, 
-    zoomLevel: null 
+  // Read image data from output (structuredContent)
+  const imageData = (output as any)?.imageData as string | undefined;
+  
+  // Read structured data from output
+  const address = (output as any)?.address as string | undefined;
+  const flurstueckskennzeichen = (output as any)?.flurstueckskennzeichen as string | null | undefined;
+  const bundesland = (output as any)?.bundesland as string | undefined;
+  const confidence = (output as any)?.confidence as string | undefined;
+  const warning = (output as any)?.warning as string | null | undefined;
+  const zoomLevel = (output as any)?.zoomLevel as number | undefined;
+
+  console.log("FlurkarteMap data:", { 
+    imageData: imageData ? imageData.substring(0, 50) + '...' : 'undefined', 
+    address, 
+    flurstueckskennzeichen, 
+    bundesland, 
+    confidence, 
+    warning, 
+    zoomLevel,
+    responseMetadata: JSON.stringify(responseMetadata).substring(0, 200),
+    output: JSON.stringify(output).substring(0, 200)
   });
 
-  useEffect(() => {
-    console.log("FlurkarteMap output:", output);
-    const imageData = (output as any)?.imageData;
-    const address = (output as any)?.address;
-    const zoomLevel = (output as any)?.zoomLevel;
-    
-    console.log("FlurkarteMap extracted data:", { imageData, address, zoomLevel });
-    
-    if (imageData && imageData !== mapData.imageData) {
-      setMapData({ imageData, address, zoomLevel });
-    }
-  }, [output, setMapData, mapData.imageData]);
-
   const handleDownloadPNG = async () => {
-    if (!mapData.imageData) return;
+    if (!imageData) return;
     setIsDownloadingPNG(true);
     try {
-      const filename = `flurkarte-${mapData.address?.replace(/[^a-zA-Z0-9]/g, '_') || 'map'}.png`;
+      const filename = `flurkarte-${address?.replace(/[^a-zA-Z0-9]/g, '_') || 'map'}.png`;
 
       // 1. Try useDownload (for MCP environments like DevTools UI, Claude Desktop, etc.)
       try {
-        const base64Data = mapData.imageData.includes("base64,")
-          ? mapData.imageData.split("base64,")[1]
-          : mapData.imageData;
+        const base64Data = imageData.includes("base64,")
+          ? imageData.split("base64,")[1]
+          : imageData;
 
-        console.log("Attempting MCP useDownload for PNG...");
         const result = await download({
           contents: [
             {
@@ -70,7 +69,7 @@ export default function FlurkarteMap() {
       // 2. Try useFiles (for ChatGPT Apps SDK environment)
       try {
         console.log("Attempting ChatGPT useFiles for PNG...");
-        const response = await fetch(mapData.imageData);
+        const response = await fetch(imageData);
         const blob = await response.blob();
         const file = new File([blob], filename, { type: "image/png" });
 
@@ -105,9 +104,9 @@ export default function FlurkarteMap() {
               <body>
                 <div class="container">
                   <h1>Berlin Cadastral Map (Flurkarte)</h1>
-                  <img src="${mapData.imageData}" alt="Flurkarte" />
+                  <img src="${imageData}" alt="Flurkarte" />
                   <p>Right-click the map image above and select <strong>"Save Image As..."</strong> to download it to your device.</p>
-                  <a href="${mapData.imageData}" download="${filename}" class="btn-download">Direct Download Link</a>
+                  <a href="${imageData}" download="${filename}" class="btn-download">Direct Download Link</a>
                 </div>
               </body>
             </html>
@@ -123,7 +122,7 @@ export default function FlurkarteMap() {
       // 4. Fallback to standard browser download (last resort)
       console.log("Attempting browser link click fallback for PNG...");
       const link = document.createElement('a');
-      link.href = mapData.imageData;
+      link.href = imageData;
       link.download = filename;
       document.body.appendChild(link);
       link.click();
@@ -137,7 +136,7 @@ export default function FlurkarteMap() {
   };
 
   const handleDownloadPDF = () => {
-    if (!mapData.imageData) return;
+    if (!imageData) return;
     setIsDownloadingPDF(true);
     
     try {
@@ -149,7 +148,7 @@ export default function FlurkarteMap() {
       
       const img = new Image();
       img.onload = async () => {
-        const filename = `flurkarte-${mapData.address?.replace(/[^a-zA-Z0-9]/g, '_') || 'map'}.pdf`;
+        const filename = `flurkarte-${address?.replace(/[^a-zA-Z0-9]/g, '_') || 'map'}.pdf`;
         
         try {
           const imgWidth = 280;
@@ -158,10 +157,10 @@ export default function FlurkarteMap() {
           const y = 20;
           
           pdf.setFontSize(16);
-          pdf.text(`Berlin Flurkarte - ${mapData.address}`, 148.5, 10, { align: 'center' });
+          pdf.text(`Berlin Flurkarte - ${address}`, 148.5, 10, { align: 'center' });
           pdf.setFontSize(10);
-          pdf.text(`Zoom Level: ${mapData.zoomLevel} | Generated: ${new Date().toLocaleDateString()}`, 148.5, 16, { align: 'center' });
-          pdf.addImage(mapData.imageData!, 'PNG', x, y, imgWidth, imgHeight);
+          pdf.text(`Zoom Level: ${zoomLevel} | Generated: ${new Date().toLocaleDateString()}`, 148.5, 16, { align: 'center' });
+          pdf.addImage(imageData!, 'PNG', x, y, imgWidth, imgHeight);
           
           const pdfDataUri = pdf.output('datauristring');
           const base64Pdf = pdfDataUri.includes("base64,")
@@ -251,14 +250,14 @@ export default function FlurkarteMap() {
         console.error("Failed to load map image for PDF:", err);
         setIsDownloadingPDF(false);
       };
-      img.src = mapData.imageData;
+      img.src = imageData;
     } catch (err) {
       console.error("PDF download failed:", err);
       setIsDownloadingPDF(false);
     }
   };
 
-  if (!mapData.imageData) {
+  if (!imageData) {
     return (
       <div className="p-8 max-w-2xl mx-auto text-center glass-panel rounded-2xl shadow-xl border border-slate-205/50 dark:border-slate-800/50 animate-fade-in">
         <div className="flex flex-col items-center justify-center py-16">
@@ -294,6 +293,16 @@ export default function FlurkarteMap() {
       {/* Main Glass Panel Card */}
       <div className="glass-panel border border-slate-200/80 dark:border-slate-800/80 rounded-2xl shadow-2xl overflow-hidden transition-all duration-300">
         <div className="p-6 md:p-8">
+          {/* Warning Banner */}
+          {warning && (
+            <div className="mb-6 p-4 rounded-xl bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800/50 flex gap-3">
+              <AlertTriangle className="h-5 w-5 text-orange-600 dark:text-orange-400 flex-shrink-0 mt-0.5" />
+              <div className="text-sm">
+                <p className="font-semibold text-orange-800 dark:text-orange-300">⚠️ {warning}</p>
+              </div>
+            </div>
+          )}
+
           {/* Metadata Section */}
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6 pb-4 border-b border-slate-200/50 dark:border-slate-800/50">
             <div className="flex gap-2.5 items-start">
@@ -302,11 +311,27 @@ export default function FlurkarteMap() {
               </div>
               <div>
                 <h3 className="text-base font-bold text-slate-850 dark:text-white leading-tight">
-                  📍 {mapData.address}
+                  📍 {address}
                 </h3>
-                <span className="inline-flex items-center gap-1.5 text-xs text-slate-400 dark:text-slate-500 mt-1">
-                  Zoom Level: <strong className="font-semibold text-slate-700 dark:text-slate-350">{mapData.zoomLevel}</strong> (Scale: 1-10)
-                </span>
+                <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1">
+                  <span className="inline-flex items-center gap-1.5 text-xs text-slate-400 dark:text-slate-500">
+                    Zoom Level: <strong className="font-semibold text-slate-700 dark:text-slate-350">{zoomLevel}</strong> (Scale: 1-10)
+                  </span>
+                  {flurstueckskennzeichen && (
+                    <span className="inline-flex items-center gap-1.5 text-xs text-slate-400 dark:text-slate-500">
+                      Flurstück: <strong className="font-semibold text-slate-700 dark:text-slate-350">{flurstueckskennzeichen}</strong>
+                    </span>
+                  )}
+                  {confidence && (
+                    <span className={`inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full ${
+                      confidence === 'exact' ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400' :
+                      confidence === 'containing' ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400' :
+                      'bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400'
+                    }`}>
+                      Confidence: <strong className="font-semibold">{confidence}</strong>
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
           </div>
@@ -314,7 +339,7 @@ export default function FlurkarteMap() {
           {/* Map Image Panel with Shadow Effect */}
           <div className="mb-6 relative group overflow-hidden rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950">
             <img
-              src={mapData.imageData}
+              src={imageData}
               alt="Berlin Flurkarte (Cadastral Map)"
               className="w-full h-auto object-cover max-h-[350px] transition-transform duration-500 group-hover:scale-[1.02]"
             />
