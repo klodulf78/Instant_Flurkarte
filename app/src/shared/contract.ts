@@ -11,7 +11,14 @@ export interface FlurkarteInput {
 }
 
 export interface FlurkarteResult {
-  pdfUrl: string;
+  pdfUrl: string; // data:application/pdf;base64,... (canonical artifact)
+  /**
+   * Optional public https URL serving the PDF directly (e.g. the TIM-online
+   * MapFish report URL). Used by the view to open the PDF in the user's
+   * browser via useOpenExternal, since sandboxed iframes block data: PDFs and
+   * useDownload is unavailable on Apps-SDK hosts.
+   */
+  pdfDownloadUrl?: string;
   flurstueckskennzeichen: string;
   address: string;
   bundesland: string;

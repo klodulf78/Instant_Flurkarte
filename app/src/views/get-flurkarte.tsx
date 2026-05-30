@@ -1,7 +1,7 @@
 import "@/index.css";
 
 import { useState } from "react";
-import { useDownload, useLayout } from "skybridge/web";
+import { useDownload, useLayout, useOpenExternal } from "skybridge/web";
 import { useToolInfo } from "../helpers.js";
 
 function sanitizeFilename(name: string): string {
@@ -12,14 +12,26 @@ export default function GetFlurkarte() {
   const { theme } = useLayout();
   const { output, responseMetadata, isPending } =
     useToolInfo<"get_flurkarte">();
+  const openExternal = useOpenExternal();
   const { download } = useDownload();
   const [saving, setSaving] = useState(false);
 
-  const pdfUrl = (responseMetadata as { pdfUrl?: string } | undefined)?.pdfUrl;
+  const meta = responseMetadata as
+    | { pdfUrl?: string; pdfDownloadUrl?: string }
+    | undefined;
+  const pdfUrl = meta?.pdfUrl;
+  const pdfDownloadUrl = meta?.pdfDownloadUrl;
   const address = output?.address ?? "";
   const title = `Flurkarte_${address}`;
+  const canGet = Boolean(pdfDownloadUrl || pdfUrl);
 
-  const handleDownload = async () => {
+  // Prefer opening the official https PDF in the browser (reliable in
+  // sandboxed hosts). Fall back to a host-mediated download of the base64.
+  const handleOpen = async () => {
+    if (pdfDownloadUrl) {
+      openExternal(pdfDownloadUrl, { redirectUrl: false });
+      return;
+    }
     if (!pdfUrl) return;
     setSaving(true);
     try {
@@ -70,24 +82,25 @@ export default function GetFlurkarte() {
           </div>
           <button
             type="button"
-            onClick={handleDownload}
-            disabled={!pdfUrl || saving}
+            onClick={handleOpen}
+            disabled={!canGet || saving}
             className="shrink-0 rounded-md border border-border bg-foreground px-4 py-2 text-sm font-medium text-background disabled:opacity-50"
           >
-            {saving ? "Speichere…" : "PDF herunterladen"}
+            {saving ? "Speichere…" : "PDF öffnen"}
           </button>
         </div>
 
-        {pdfUrl ? (
+        {pdfDownloadUrl ? (
           <iframe
             title={title}
-            src={pdfUrl}
+            src={pdfDownloadUrl}
             className="w-full rounded-md border border-border bg-white"
             style={{ height: 560 }}
           />
         ) : (
           <div className="rounded-md border border-border p-6 text-sm opacity-70">
-            Keine PDF-Daten erhalten.
+            Vorschau hier nicht verfügbar — über „PDF öffnen" die amtliche
+            Flurkarte im Browser anzeigen.
           </div>
         )}
       </div>

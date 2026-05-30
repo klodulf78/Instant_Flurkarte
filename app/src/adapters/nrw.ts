@@ -897,7 +897,7 @@ function buildMapfishSpec(
 
 async function fetchTimOnlinePdf(
   target: PrintTarget,
-): Promise<Uint8Array> {
+): Promise<{ bytes: Uint8Array; downloadUrl: string }> {
   const createResponse = await fetchJsonWithRetry<MapfishCreateResponse>(
     MAPFISH_PRINT_URL,
     {
@@ -949,7 +949,7 @@ async function fetchTimOnlinePdf(
       throw new Error("TIM-online download was not a PDF.");
     }
 
-    return pdfBytes;
+    return { bytes: pdfBytes, downloadUrl };
   }
 
   throw new Error("TIM-online MapFish print timed out.");
@@ -1155,11 +1155,12 @@ export const nrwAdapter: FlurkarteAdapter = {
     };
 
     try {
-      const pdfBytes = await fetchTimOnlinePdf(target);
+      const { bytes: pdfBytes, downloadUrl } = await fetchTimOnlinePdf(target);
       const result = {
         ...baseResult,
         source: TIM_ONLINE_SOURCE,
         pdfUrl: toPdfDataUrl(pdfBytes),
+        pdfDownloadUrl: downloadUrl,
       };
       setCachedResult(key, result);
       return result;

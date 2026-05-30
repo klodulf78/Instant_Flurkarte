@@ -140,6 +140,11 @@ const server = new McpServer(
       view: {
         component: "get-flurkarte",
         description: "Official NRW Flurkarte (PDF) — preview & download",
+        csp: {
+          // Allow embedding the official PDF and opening it in the browser.
+          frameDomains: ["https://www.tim-online.nrw.de"],
+          redirectDomains: ["https://www.tim-online.nrw.de"],
+        },
       },
     },
     async (input) => {
@@ -151,9 +156,9 @@ const server = new McpServer(
 
       // Keep the model-facing payload lean. The base64 PDF (~200 KB+) MUST NOT
       // go into structuredContent: it floods the LLM context and the host
-      // rejects the response ("An error occurred"). It lives in _meta, which
-      // reaches the view only and never the model.
-      const { pdfUrl, ...metadata } = result;
+      // rejects the response ("An error occurred"). Binary + URLs live in
+      // _meta, which reaches the view only and never the model.
+      const { pdfUrl, pdfDownloadUrl, ...metadata } = result;
 
       return {
         structuredContent: metadata,
@@ -163,7 +168,7 @@ const server = new McpServer(
             text: `Generated Flurkarte PDF for ${result.address} (${result.bundesland}) from ${result.source}.`,
           },
         ],
-        _meta: { pdfUrl },
+        _meta: { pdfUrl, pdfDownloadUrl },
         isError: false,
       };
     },
