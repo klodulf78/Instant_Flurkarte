@@ -693,10 +693,14 @@ async function fetchParcelContainingAddress(
 ): Promise<{ parcel: ParcelFeature; confidence: MatchConfidence }> {
   const geo = await geocodeAddress(address);
   const [lon, lat] = geo.point;
-  const delta = 0.0015;
+  // Dense residential areas pack >100 parcels into a small radius. A tight
+  // bbox (~90 m) around the rooftop-accurate geocode plus a high limit makes
+  // sure the actual parcel is never truncated away (this was the cause of
+  // wrong "approximate" matches, e.g. Kurfürstenstraße 42 → Flurstück 245).
+  const delta = 0.0008;
   const params = new URLSearchParams({
     bbox: [lon - delta, lat - delta, lon + delta, lat + delta].join(","),
-    limit: "40",
+    limit: "200",
     f: "json",
     profile: "rfc7946",
   });
@@ -748,7 +752,7 @@ async function fetchNeighborParcels(
     bbox: printBbox.join(","),
     "bbox-crs": EPSG_25832_CRS,
     crs: EPSG_25832_CRS,
-    limit: "50",
+    limit: "200",
     f: "json",
   });
   const collection = await fetchJsonWithRetry<ParcelFeatureCollection>(
