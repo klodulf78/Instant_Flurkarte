@@ -1,0 +1,33 @@
+{
+  "name": "instant-flurkarte",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Blank Skybridge MCP server template",
+  "type": "module",
+  "scripts": {
+    "dev": "skybridge dev",
+    "dev:tunnel": "skybridge dev --tunnel",
+    "build": "skybridge build",
+    "start": "skybridge start",
+    "deploy": "alpic deploy"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "axios": "^1.16.1",
+    "proj4": "^2.20.8",
+    "react": "^19.2.6",
+    "skybridge": "^1.0.3",
+    "vite": "^8.0.3"
+  },
+  "devDependencies": {
+    "@skybridge/devtools": "^1.0.0",
+    "@types/node": "^24.12.0",
+    "@types/react": "^19.2.15",
+    "alpic": "^1.104.1",
+    "tsx": "^4.22.3",
+    "typescript": "^6.0.2"
+  },
+  "engines": {
+    "node": ">=24.14.1"
+  }
+}
