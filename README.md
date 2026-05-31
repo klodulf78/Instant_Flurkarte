@@ -63,7 +63,44 @@ The map scale is chosen **deterministically from the parcel size** (plus a fixed
 
 ## 🏗️ Architecture
 
-A single shared contract (`FlurkarteResult` / `FlurkarteAdapter`) with **one adapter per state**, so new Bundesländer plug in cleanly. The MCP tool routes an address to the matching state adapter, resolves the parcel, and returns the official document.
+```
+Address Input
+    └─► StateRouter (geocode → Bundesland detection)
+            └─► NRWAdapter  (implements FlurkarteAdapter)
+                    ├─► OGC API Features  → parcel match (lagebeztxt + point-in-polygon)
+                    ├─► ALKIS WMS         → live map tile preview
+                    └─► TIM-online MapFish → official PDF export
+```
+
+Each state is a single adapter implementing a shared contract:
+
+```typescript
+interface FlurkarteAdapter {
+  resolveParcel(address: string): Promise<FlurkarteResult>;
+}
+
+interface FlurkarteResult {
+  parcelId: string;
+  mapPreviewUrl: string;
+  pdfUrl: string;
+  flagged: boolean; // true if match confidence is low
+}
+```
+
+Adding a new Bundesland = one file implementing `FlurkarteAdapter`. The MCP tool routes an address to the matching state adapter, resolves the parcel, and returns the official document.
+
+## 🛠️ Stack
+
+| Layer | Technology |
+|---|---|
+| MCP framework | [Skybridge](https://docs.skybridge.tech) |
+| ChatGPT integration | ChatGPT Apps SDK (MCP over SSE) |
+| Hosting | [Alpic](https://alpic.ai) |
+| Runtime | Node.js 24+ |
+| Parcel data | OGC API Features (WFS3) — NRW: [Geobasis NRW](https://www.geobasis.nrw.de) |
+| Map tiles | ALKIS WMS |
+| PDF export | TIM-online MapFish print service |
+| Data license | [Datenlizenz Deutschland – Zero (dl-de/zero-2-0)](https://www.govdata.de/dl-de/zero-2-0) — commercial use permitted |
 
 ## 🧑‍💻 Local development
 
@@ -80,4 +117,4 @@ npm run deploy       # deploy to Alpic
 
 ## 👥 Team
 
-Built at **Berlin Hack Night, May 2026** — Karl (Interhyp), Sasha, Ohdo & Dokeun.
+Built at **Berlin Hack Night, May 2026** — Karl (Interhyp), Sasha, Dokeun.
