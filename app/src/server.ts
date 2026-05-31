@@ -1,6 +1,7 @@
 import { McpServer } from "skybridge/server";
 import { z } from "zod";
 import { nrwAdapter } from "./adapters/nrw.js";
+import { berlinAdapter } from "./adapters/berlin.js";
 import {
   selectAdapter,
   type FlurkarteInput,
@@ -125,7 +126,7 @@ const server = new McpServer(
     {
       name: "get_flurkarte",
       description:
-        "Generate the official NRW cadastral map (Flurkarte / Liegenschaftskarte) as a PDF for a given German address. IMPORTANT: only the `address` (street + house number + postal code + city in NRW) is required — the tool automatically geocodes the address and resolves the exact parcel. Do NOT ask the user for Gemarkung, Flur or Flurstueck; those are optional and only used as a fallback when no address is available. As soon as you have an address, call this tool directly.",
+        "Generate the official cadastral map (Flurkarte / Liegenschaftskarte) as a PDF for a given German address. Supports NRW (Nordrhein-Westfalen) and Berlin/Brandenburg. IMPORTANT: only the `address` (street + house number + postal code + city) is required — the tool automatically detects the state, geocodes the address and resolves the exact parcel. Do NOT ask the user for Gemarkung, Flur or Flurstueck; those are optional and only used as a fallback when no address is available. As soon as you have an address, call this tool directly.",
       inputSchema: flurkarteInputSchema,
       annotations: {
         title: "Get Flurkarte",
@@ -134,16 +135,16 @@ const server = new McpServer(
         openWorldHint: true,
       },
       _meta: {
-        "openai/toolInvocation/invoking": "Requesting the TIM-online Flurkarte...",
+        "openai/toolInvocation/invoking": "Requesting the Flurkarte...",
         "openai/toolInvocation/invoked": "Flurkarte PDF ready.",
       },
       view: {
         component: "get-flurkarte",
-        description: "Official NRW Flurkarte (PDF) — preview & download",
+        description: "Official Flurkarte (PDF) — preview & download",
         csp: {
           // WMS preview image (inline) + opening the official PDF in the browser.
-          resourceDomains: ["https://www.wms.nrw.de"],
-          redirectDomains: ["https://www.tim-online.nrw.de"],
+          resourceDomains: ["https://www.wms.nrw.de", "https://gdi.berlin.de"],
+          redirectDomains: ["https://www.tim-online.nrw.de", "https://gdi.berlin.de"],
         },
       },
     },
@@ -151,7 +152,7 @@ const server = new McpServer(
       const flurkarteInput: FlurkarteInput = input;
       const result = await selectAdapter(
         flurkarteInput,
-        [nrwAdapter],
+        [berlinAdapter, nrwAdapter],
       ).getFlurkarte(flurkarteInput);
 
       // Keep the model-facing payload lean. The base64 PDF (~200 KB+) MUST NOT

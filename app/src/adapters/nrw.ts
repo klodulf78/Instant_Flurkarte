@@ -1297,13 +1297,35 @@ export const nrwAdapter: FlurkarteAdapter = {
   bundesland: "NRW",
 
   canHandle(input: FlurkarteInput): boolean {
+    // Handle if bundesland is explicitly set to NRW
     const bundesland = normalizeBundesland(input.bundesland);
-    return (
-      bundesland === undefined ||
-      bundesland === "" ||
-      bundesland === "nrw" ||
-      bundesland === "nordrhein-westfalen"
-    );
+    if (bundesland === "nrw" || bundesland === "nordrhein-westfalen") {
+      return true;
+    }
+    // If no bundesland specified, try to infer from address
+    if (input.address && (bundesland === undefined || bundesland === "")) {
+      const addr = input.address.toLowerCase();
+      // Major NRW cities and postal code patterns
+      const nrwCities = [
+        'aachen', 'köln', 'cologne', 'düsseldorf', 'dortmund', 'essen', 'duisburg',
+        'bochum', 'wuppertal', 'bielefeld', 'bonn', 'münster', 'karlsruhe', 'recklinghausen',
+        'oberhausen', 'hagen', 'hamm', 'herne', 'moers', 'neuss', 'krefeld',
+        'solingen', 'leverkusen', 'oldenburg', 'paderborn', 'siegen', 'bottrop',
+        'recklinghausen', 'remscheid', 'salzkotten', 'unna', 'witten', 'bergisch',
+        'gladbach', 'moers', 'neuss', 'krefeld', ' Mülheim', 'gelsenkirchen'
+      ];
+      // Check for NRW postal codes (40-47xxx, 50-53xxx, 58-59xxx)
+      const postalCodeMatch = addr.match(/\b(4[0-7]|5[0-3]|5[8-9])\d{3}\b/);
+      if (postalCodeMatch) {
+        return true;
+      }
+      // Check for NRW city names
+      if (nrwCities.some(city => addr.includes(city))) {
+        return true;
+      }
+    }
+    // Fallback: handle if we have NRW-specific parcel IDs
+    return !!(input.gemarkung || input.flur || input.flurstueck);
   },
 
   async getFlurkarte(input: FlurkarteInput): Promise<FlurkarteResult> {
