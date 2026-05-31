@@ -2,6 +2,7 @@ import { McpServer } from "skybridge/server";
 import { z } from "zod";
 import { nrwAdapter } from "./adapters/nrw.js";
 import { berlinAdapter } from "./adapters/berlin.js";
+import { thueringenAdapter } from "./adapters/thueringen.js";
 import {
   selectAdapter,
   type FlurkarteInput,
@@ -126,7 +127,7 @@ const server = new McpServer(
     {
       name: "get_flurkarte",
       description:
-        "Generate the official cadastral map (Flurkarte / Liegenschaftskarte) as a PDF for a given German address. Supports NRW (Nordrhein-Westfalen) and Berlin/Brandenburg. IMPORTANT: only the `address` (street + house number + postal code + city) is required — the tool automatically detects the state, geocodes the address and resolves the exact parcel. Do NOT ask the user for Gemarkung, Flur or Flurstueck; those are optional and only used as a fallback when no address is available. As soon as you have an address, call this tool directly.",
+        "Generate the official cadastral map (Flurkarte / Liegenschaftskarte) as a PDF for a given German address. Supports NRW (Nordrhein-Westfalen), Berlin/Brandenburg, and Thüringen. IMPORTANT: only the `address` (street + house number + postal code + city) is required — the tool automatically detects the state, geocodes the address and resolves the exact parcel. Do NOT ask the user for Gemarkung, Flur or Flurstueck; those are optional and only used as a fallback when no address is available. As soon as you have an address, call this tool directly.",
       inputSchema: flurkarteInputSchema,
       annotations: {
         title: "Get Flurkarte",
@@ -143,8 +144,8 @@ const server = new McpServer(
         description: "Official Flurkarte (PDF) — preview & download",
         csp: {
           // WMS preview image (inline) + opening the official PDF in the browser.
-          resourceDomains: ["https://www.wms.nrw.de", "https://gdi.berlin.de"],
-          redirectDomains: ["https://www.tim-online.nrw.de", "https://gdi.berlin.de"],
+          resourceDomains: ["https://www.wms.nrw.de", "https://gdi.berlin.de", "https://www.geoproxy.geoportal-th.de"],
+          redirectDomains: ["https://www.tim-online.nrw.de", "https://gdi.berlin.de", "https://www.geoproxy.geoportal-th.de"],
         },
       },
     },
@@ -152,7 +153,7 @@ const server = new McpServer(
       const flurkarteInput: FlurkarteInput = input;
       const result = await selectAdapter(
         flurkarteInput,
-        [berlinAdapter, nrwAdapter],
+        [thueringenAdapter, berlinAdapter, nrwAdapter],
       ).getFlurkarte(flurkarteInput);
 
       // Keep the model-facing payload lean. The base64 PDF (~200 KB+) MUST NOT
