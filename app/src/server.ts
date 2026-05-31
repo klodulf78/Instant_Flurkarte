@@ -10,11 +10,28 @@ const flurkarteInputSchema = {
   address: z
     .string()
     .optional()
-    .describe("Address, e.g. Domkloster 4, 50667 Koeln."),
+    .describe(
+      "Full German address including house number, e.g. 'Unnaer Straße 1, 59423 Unna'. This alone is sufficient — no cadastral IDs needed.",
+    ),
   bundesland: z.string().optional().describe("Bundesland, e.g. NRW."),
-  gemarkung: z.string().optional().describe("Gemarkung."),
-  flur: z.string().optional().describe("Flur."),
-  flurstueck: z.string().optional().describe("Flurstueck."),
+  gemarkung: z
+    .string()
+    .optional()
+    .describe(
+      "Optional fallback. Only used if no address is provided. Do not ask the user for this.",
+    ),
+  flur: z
+    .string()
+    .optional()
+    .describe(
+      "Optional fallback. Only used if no address is provided. Do not ask the user for this.",
+    ),
+  flurstueck: z
+    .string()
+    .optional()
+    .describe(
+      "Optional fallback. Only used if no address is provided. Do not ask the user for this.",
+    ),
 } satisfies Record<keyof FlurkarteInput, z.ZodOptional<z.ZodString>>;
 
 const server = new McpServer(
@@ -108,7 +125,7 @@ const server = new McpServer(
     {
       name: "get_flurkarte",
       description:
-        "Return an M1 Instant Flurkarte PDF from the official NRW ALKIS WMS for a hardcoded Koeln bbox.",
+        "Generate the official NRW cadastral map (Flurkarte / Liegenschaftskarte) as a PDF for a given German address. IMPORTANT: only the `address` (street + house number + postal code + city in NRW) is required — the tool automatically geocodes the address and resolves the exact parcel. Do NOT ask the user for Gemarkung, Flur or Flurstueck; those are optional and only used as a fallback when no address is available. As soon as you have an address, call this tool directly.",
       inputSchema: flurkarteInputSchema,
       annotations: {
         title: "Get Flurkarte",
@@ -117,8 +134,17 @@ const server = new McpServer(
         openWorldHint: true,
       },
       _meta: {
-        "openai/toolInvocation/invoking": "Fetching the NRW ALKIS map...",
+        "openai/toolInvocation/invoking": "Requesting the TIM-online Flurkarte...",
         "openai/toolInvocation/invoked": "Flurkarte PDF ready.",
+      },
+      view: {
+        component: "get-flurkarte",
+        description: "Official NRW Flurkarte (PDF) — preview & download",
+        csp: {
+          // WMS preview image (inline) + opening the official PDF in the browser.
+          resourceDomains: ["https://www.wms.nrw.de"],
+          redirectDomains: ["https://www.tim-online.nrw.de"],
+        },
       },
     },
     async (input) => {
@@ -128,14 +154,23 @@ const server = new McpServer(
         [nrwAdapter],
       ).getFlurkarte(flurkarteInput);
 
+      // Keep the model-facing payload lean. The base64 PDF (~200 KB+) MUST NOT
+      // go into structuredContent: it floods the LLM context and the host
+      // rejects the response ("An error occurred"). Binary + URLs live in
+      // _meta, which reaches the view only and never the model.
+      const { pdfUrl, pdfDownloadUrl, previewImageUrl, ...metadata } = result;
+
       return {
-        structuredContent: result,
+        structuredContent: metadata,
         content: [
           {
             type: "text",
-            text: `Generated M1 Flurkarte PDF for ${result.address} (${result.bundesland}) from ${result.source}.`,
+            text:
+              `Generated Flurkarte PDF for ${result.address} (${result.bundesland}) from ${result.source}.` +
+              (result.warning ? ` ⚠️ ${result.warning}` : ""),
           },
         ],
+        _meta: { pdfUrl, pdfDownloadUrl, previewImageUrl },
         isError: false,
       };
     },
