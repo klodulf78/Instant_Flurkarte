@@ -11,8 +11,10 @@ export default function FlurkarteMap() {
   const [isDownloadingPNG, setIsDownloadingPNG] = useState(false);
   const [isDownloadingPDF, setIsDownloadingPDF] = useState(false);
 
-  // Read image data from output (structuredContent)
-  const imageData = (output as any)?.imageData as string | undefined;
+  // Read image data from _meta (previewImageUrl or pdfUrl)
+  const previewImageUrl = (responseMetadata as any)?.previewImageUrl as string | undefined;
+  const pdfUrl = (responseMetadata as any)?.pdfUrl as string | undefined;
+  const imageData = previewImageUrl || pdfUrl;
   
   // Read structured data from output
   const address = (output as any)?.address as string | undefined;
@@ -24,6 +26,8 @@ export default function FlurkarteMap() {
 
   console.log("FlurkarteMap data:", { 
     imageData: imageData ? imageData.substring(0, 50) + '...' : 'undefined', 
+    previewImageUrl: previewImageUrl ? 'present' : 'undefined',
+    pdfUrl: pdfUrl ? 'present' : 'undefined',
     address, 
     flurstueckskennzeichen, 
     bundesland, 
