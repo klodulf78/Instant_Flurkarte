@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Instant Flurkarte</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="page-shell">
+      <nav class="topbar" aria-label="Product">
+        <a class="brand" href="/" aria-label="Instant Flurkarte home">
+          <span class="brand-mark">IF</span>
+          <span>Instant Flurkarte</span>
+        </a>
+        <span class="topbar-badge">Official cadastral records for property finance</span>
+      </nav>
+
+      <section class="product-console" aria-labelledby="hero-title">
+        <div class="console-panel">
+          <div class="hero-copy">
+            <p class="product-badge">Legal-tech automation</p>
+            <h1 id="hero-title">Instant Flurkarte</h1>
+            <p class="supporting-headline">Official cadastral maps in seconds.</p>
+            <p class="hero-text">Enter an address, resolve the parcel, and retrieve the official state PDF from InfoLika.</p>
+          </div>
+
+          <form class="search-panel" id="searchForm">
+            <label for="addressInput">Property address</label>
+            <div class="search-row">
+              <input
+                id="addressInput"
+                name="address"
+                autocomplete="street-address"
+                placeholder="Große Arche 14, 99084 Erfurt"
+                value="Große Arche 14, 99084 Erfurt"
+                required
+              >
+              <button class="primary-button" id="submitButton" type="submit">
+                <span class="button-ready">Get Official PDF</span>
+                <span class="button-loading">Retrieving...</span>
+              </button>
+            </div>
+            <p class="field-example">Example: Große Arche 14, 99084 Erfurt</p>
+            <p class="field-error" id="addressError" hidden>Please enter a street, house number and city in Thüringen.</p>
+          </form>
+
+          <div class="workflow-section inline-workflow" aria-label="Workflow">
+            <div class="workflow-heading">
+              <p class="section-kicker">Live workflow</p>
+              <h2>Address → Parcel → Official PDF</h2>
+            </div>
+            <ol class="workflow-steps" id="workflowSteps">
+              <li class="step-card is-pending" data-step="0">
+                <span class="step-index">1</span>
+                <div>
+                  <strong>Address recognized</strong>
+                  <span>Flexible German input</span>
+                </div>
+              </li>
+              <li class="step-card is-pending" data-step="1">
+                <span class="step-index">2</span>
+                <div>
+                  <strong>Parcel identified</strong>
+                  <span>State source lookup</span>
+                </div>
+              </li>
+              <li class="step-card is-pending" data-step="2">
+                <span class="step-index">3</span>
+                <div>
+                  <strong>Record found</strong>
+                  <span>InfoLika response</span>
+                </div>
+              </li>
+              <li class="step-card is-pending" data-step="3">
+                <span class="step-index">4</span>
+                <div>
+                  <strong>PDF ready</strong>
+                  <span>Downloadable file</span>
+                </div>
+              </li>
+            </ol>
+          </div>
+        </div>
+
+        <aside class="map-hero" aria-label="Official cadastral map preview">
+          <div class="document-preview-card">
+            <div class="document-header">
+              <div>
+                <span>InfoLika Ausgabe</span>
+                <strong>Auszug Liegenschaftskarte</strong>
+              </div>
+              <span class="source-pill">State PDF</span>
+            </div>
+            <div class="hero-map-frame">
+              <img id="heroMapImage" alt="Official cadastral parcel preview for Erfurt">
+              <div class="map-fallback" aria-hidden="true"></div>
+              <span class="parcel-highlight" aria-hidden="true"></span>
+              <span class="map-pin" aria-hidden="true"></span>
+            </div>
+            <div class="document-footer">
+              <span>Official cadastral record</span>
+              <span>Thüringen Geoportal</span>
+            </div>
+          </div>
+
+          <div class="floating-parcel-card">
+            <span class="status-dot"></span>
+            <div>
+              <p>Flurstück 159</p>
+              <strong>Official State Document</strong>
+            </div>
+            <span class="ready-chip">PDF ready</span>
+          </div>
+        </aside>
+      </section>
+
+      <section class="impact-section" aria-label="Business impact">
+        <div class="impact-stage">
+          <div class="kpi-item">
+            <span class="time-value">10-15 min</span>
+            <span class="time-label">manual process</span>
+          </div>
+          <div class="time-arrow" aria-hidden="true">→</div>
+          <div class="kpi-item kpi-primary">
+            <span class="time-value">15 sec</span>
+            <span class="time-label">Instant Flurkarte</span>
+          </div>
+          <div class="time-arrow" aria-hidden="true">→</div>
+          <div class="kpi-item">
+            <strong class="time-value"><span id="kpiCounter">0</span>%</strong>
+            <span class="time-label">faster</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="results-section" id="resultsSection" hidden aria-live="polite">
+        <div class="section-heading result-heading">
+          <div>
+            <p class="section-kicker">Retrieved record</p>
+            <h2>Official document ready for the finance file.</h2>
+          </div>
+          <span class="status-badge" id="resultStatus">PDF ready</span>
+        </div>
+
+        <div class="results-layout">
+          <article class="result-summary">
+            <dl class="result-meta-list">
+              <div class="result-meta-item featured">
+                <dt>Address</dt>
+                <dd id="resultAddress">-</dd>
+              </div>
+              <div class="result-meta-item parcel-row">
+                <dt>Parcel ID</dt>
+                <dd>
+                  <strong id="resultParcel">-</strong>
+                  <button class="secondary-button" id="copyParcelButton" type="button">Copy</button>
+                </dd>
+              </div>
+              <div class="result-meta-item">
+                <dt>Bundesland</dt>
+                <dd id="resultBundesland">-</dd>
+              </div>
+              <div class="result-meta-item">
+                <dt>Source</dt>
+                <dd id="resultSource">-</dd>
+              </div>
+              <div class="result-meta-item">
+                <dt>Retrieved</dt>
+                <dd id="resultTimestamp">-</dd>
+              </div>
+            </dl>
+
+            <div class="record-trust">
+              <span class="status-dot"></span>
+              <span>Live state-source retrieval from Thüringen.</span>
+            </div>
+          </article>
+
+          <article class="pdf-showcase">
+            <div class="document-card">
+              <div class="document-header">
+                <div>
+                  <span>Official PDF Preview</span>
+                  <strong>Auszug Liegenschaftskarte</strong>
+                </div>
+                <span class="pdf-mark">PDF</span>
+              </div>
+              <div class="document-map">
+                <img id="parcelPreviewImage" alt="Official cadastral map preview">
+                <div class="map-fallback" aria-hidden="true"></div>
+                <span class="parcel-highlight document-highlight" aria-hidden="true"></span>
+                <span class="map-pin large" aria-hidden="true"></span>
+              </div>
+              <div class="document-footer">
+                <span>Generated from official source</span>
+                <span>Thüringen</span>
+              </div>
+            </div>
+
+            <a class="download-button" id="downloadButton" href="#" target="_blank" rel="noreferrer">
+              Download Official PDF
+            </a>
+          </article>
+        </div>
+      </section>
+
+      <section class="advisory-section" aria-labelledby="advisory-title">
+        <div class="advisory-copy">
+          <p class="section-kicker">For finance teams</p>
+          <h2 id="advisory-title">One address input for cadastral evidence.</h2>
+          <p>Built for mortgage applications, property valuation, due diligence, and real estate advisory workflows.</p>
+        </div>
+        <div class="use-case-grid">
+          <article class="use-case-card">
+            <span class="case-icon case-bank" aria-hidden="true"></span>
+            <h3>Mortgage</h3>
+          </article>
+          <article class="use-case-card">
+            <span class="case-icon case-value" aria-hidden="true"></span>
+            <h3>Valuation</h3>
+          </article>
+          <article class="use-case-card">
+            <span class="case-icon case-docs" aria-hidden="true"></span>
+            <h3>Due diligence</h3>
+          </article>
+          <article class="use-case-card">
+            <span class="case-icon case-advice" aria-hidden="true"></span>
+            <h3>Advisory</h3>
+          </article>
+        </div>
+      </section>
+
+      <aside class="toast" id="toast" role="status" aria-live="polite"></aside>
+    </main>
+
+    <script src="app.js" type="module"></script>
+  </body>
+</html>

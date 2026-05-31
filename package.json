@@ -1,0 +1,22 @@
+{
+  "name": "instant-flurkarte",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Hackathon prototype for the Instant Flurkarte MCP tool.",
+  "bin": {
+    "instant-flurkarte-mcp": "./src/server.js"
+  },
+  "scripts": {
+    "demo": "node src/demo-server.js",
+    "test": "node --test",
+    "smoke:thueringen": "node scripts/smoke-thueringen.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.13.0",
+    "zod": "^3.25.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
